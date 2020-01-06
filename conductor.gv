@@ -1,0 +1,73 @@
+digraph G {
+	node [
+		colorscheme="accent8"
+		labeljust="l"
+		style=filled
+		]
+	edge [
+		colorscheme="dark28"
+		]
+
+	subgraph cluster_frontend {
+		/* software */
+		{
+			node [
+				fillcolor=1
+				shape=record
+			]
+			conductorserver [label="conductor-server"];
+			conductorpipe [label="conductor-pipe"];
+			sshd [label="sshd"];
+		}
+		{
+			node [
+				fillcolor=2
+				shape=record
+			]
+			forest [label="forest"];
+			remotesocket [label="socket"];
+		}
+
+		label="frontend";
+	}
+
+	subgraph cluster_compute {
+		/* software */
+		{
+			node [
+				fillcolor=1
+				shape=record
+			]
+			conductorclient [label="conductor"];
+			app [label="Jupyter/RStudio"];
+		}
+		{
+			node [
+				fillcolor=2
+				shape=record
+			]
+			localsocket [label="socket"];
+		}
+
+		label="compute";
+	}
+
+	user [label="User"];
+
+	{
+		edge [ color=2 ];
+		conductorclient -> sshd [label="connect"];
+		app -> localsocket [label="listen", color=2];
+		conductorclient -> localsocket [label="forward"];
+		conductorserver -> remotesocket [label="forward"];
+		sshd -> remotesocket [label="listen"];
+		user -> conductorserver [label="access app.user.example.com"];
+	}
+	conductorclient -> app [label="run"];
+	conductorserver -> forest [label="watch"];
+	sshd -> conductorpipe [label="run"];
+	conductorpipe -> forest [label="write config"];
+	user -> conductorclient [label="run", style=dotted];
+	//remotesocket -> localsocket [label="forward"];
+}
+
