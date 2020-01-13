@@ -64,6 +64,21 @@ async def connectCb (reader, writer):
 		# nonexistent cookie is fine
 		pass
 
+	# is this an authorization request?
+	authPrefix = b'/_auth-conductor/'
+	if path.startswith (authPrefix):
+		authdata = path[len (authPrefix):]
+		logging.info (f'got authorization request with data={authdata}')
+		writer.write (b'\r\n'.join ([
+				b'HTTP/1.0 302 Found',
+				b'Location: /',
+				b'Set-Cookie: authorization=' + authdata + b'; HttpOnly; Path=/',
+				b'Cache-Control: no-store',
+				b'',
+				b'Follow the white rabbit.']))
+		writer.close ()
+		return
+
 	if not authorized:
 		logging.info (f'not authorized, cookies sent {cookies.values()}')
 		writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\n\r\nUnauthorized')
