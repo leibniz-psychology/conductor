@@ -104,8 +104,9 @@ async def proxy ():
 	Start public proxy worker
 	"""
 
-	logging.info ('starting server')
-	server = await asyncio.start_server (connectCb, port=8888)
+	port = 8888
+	logging.info (f'starting server on port {port}')
+	server = await asyncio.start_server (connectCb, port=port)
 	await server.serve_forever ()
 
 async def addConfig (forestPath, f):
@@ -169,7 +170,7 @@ async def watch (loop):
 	permissions = stat.S_IMODE (fstat.st_mode)
 	expect = 0o3713
 	if permissions != expect:
-		logging.error (f'Permissions on forest directory {forestPath} are not correct. Is 0{permissions:o} should be 0{expect}')
+		logging.error (f'Permissions on forest directory {forestPath} are not correct. Is 0{permissions:o} should be 0{expect:o}')
 		return
 
 	# add existing files
