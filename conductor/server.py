@@ -73,7 +73,7 @@ async def connectCb (reader, writer):
 	# try opening the socket
 	try:
 		sockreader, sockwriter = await asyncio.open_unix_connection (path=route['socket'])
-	except (ConnectionRefusedError, FileNotFoundError):
+	except (ConnectionRefusedError, FileNotFoundError, PermissionError):
 		logging.info (f'route is broken')
 		del routes[host]
 		# XXX: add url as parameter to the redirect url, so the target can then
