@@ -1,4 +1,4 @@
-import asyncio, socket, os, struct, stat, json, logging
+import asyncio, socket, os, struct, stat, json, logging, argparse
 from http.cookies import BaseCookie
 
 import aionotify
@@ -99,12 +99,11 @@ async def connectCb (reader, writer):
 	b = asyncio.ensure_future (copy (reader, sockwriter))
 	await asyncio.wait ([a, b])
 
-async def proxy ():
+async def proxy (port):
 	"""
 	Start public proxy worker
 	"""
 
-	port = 8888
 	logging.info (f'starting server on port {port}')
 	server = await asyncio.start_server (connectCb, port=port)
 	await server.serve_forever ()
@@ -158,12 +157,12 @@ async def addConfig (forestPath, f):
 		logging.error (e)
 		#os.unlink (configFile)
 
-async def watch (loop):
+async def watch (loop, forestPath):
 	"""
 	Start directory watcher worker
 	"""
 
-	forestPath = os.path.realpath ('forest')
+	forestPath = os.path.realpath (forestPath)
 
 	# make sure the forest dir has appropriate permissions
 	fstat = os.stat (forestPath, follow_symlinks=False)
@@ -193,7 +192,13 @@ async def watch (loop):
 
 def main ():
 	logging.basicConfig (level=logging.INFO)
+	parser = argparse.ArgumentParser(description='conductor server part')
+	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
+	parser.add_argument ('forest', default='forest', help='Local forest path')
+
+	args = parser.parse_args()
+
 	loop = asyncio.get_event_loop ()
-	loop.create_task (proxy ())
-	loop.run_until_complete (watch (loop))
+	loop.create_task (proxy (args.port))
+	loop.run_until_complete (watch (loop, args.forest))
 
