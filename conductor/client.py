@@ -57,6 +57,7 @@ class Client ():
 
 			pipeproc = await conn.create_process (f'{self.pipeCmd} {self.forestpath}')
 
+			tries = 0
 			while True:
 				sockName = getpass.getuser() + '-' + randomSecret (16) + '.socket'
 				sockpath = os.path.join (self.forestpath, sockName)
@@ -66,7 +67,10 @@ class Client ():
 					break
 				except asyncssh.misc.ChannelListenError:
 					# generate a different name
-					pass
+					tries += 1
+					if tries > 5:
+						logging.error (f'cannot create a socket on remote forest {self.forestpath}, check permissions')
+						return
 
 			config = {'socket': sockpath, 'auth': self.token}
 			pipeproc.stdin.write (json.dumps (config) + '\n')
