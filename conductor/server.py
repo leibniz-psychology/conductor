@@ -8,6 +8,7 @@ from multidict import CIMultiDict
 from .nss import getUser
 from .util import copy
 
+logger = logging.getLogger (__name__)
 routes = {}
 
 async def connectCb (reader, writer):
@@ -17,7 +18,7 @@ async def connectCb (reader, writer):
 	headers = CIMultiDict ()
 	while True:
 		if len (headers) > 100:
-			logging.error ('too many headers')
+			logger.error ('too many headers')
 			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
 			writer.close ()
 			return
@@ -30,15 +31,15 @@ async def connectCb (reader, writer):
 			key, value = l.decode ('utf-8').split (':', 1)
 			headers.add (key.strip (), value.strip ())
 		except ValueError:
-			logging.error (f'cannot parse {l}')
+			logger.error (f'cannot parse {l}')
 
-	logging.debug (f'{path} {method} got headers {headers}')
+	logger.debug (f'{path} {method} got headers {headers}')
 
 	try:
 		host, _ = headers['host'].split ('.', 1)
 		route = routes[host]
 	except KeyError:
-		logging.info (f'cannot find route for host {host}')
+		logger.info (f'cannot find route for host {host}')
 		# XXX: add url as parameter to the redirect url, so the target can then
 		# redirect back after starting the instance
 		url = URL ('http://localhost:8000/') / 'project' / host / 'start'
@@ -68,7 +69,7 @@ async def connectCb (reader, writer):
 	authPrefix = b'/_auth-conductor/'
 	if path.startswith (authPrefix):
 		authdata = path[len (authPrefix):]
-		logging.info (f'got authorization request with data={authdata}')
+		logger.info (f'authorization request for {host}')
 		writer.write (b'\r\n'.join ([
 				b'HTTP/1.0 302 Found',
 				b'Location: /',
@@ -80,7 +81,7 @@ async def connectCb (reader, writer):
 		return
 
 	if not authorized:
-		logging.info (f'not authorized, cookies sent {cookies.values()}')
+		logger.info (f'not authorized, cookies sent {cookies.values()}')
 		writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\n\r\nUnauthorized')
 		writer.close ()
 		return			
@@ -89,7 +90,7 @@ async def connectCb (reader, writer):
 	try:
 		sockreader, sockwriter = await asyncio.open_unix_connection (path=route['socket'])
 	except (ConnectionRefusedError, FileNotFoundError, PermissionError):
-		logging.info (f'route is broken')
+		logger.info (f'route is broken')
 		del routes[host]
 		# XXX: add url as parameter to the redirect url, so the target can then
 		# redirect back after starting the instance
@@ -119,7 +120,7 @@ async def proxy (port):
 	Start public proxy worker
 	"""
 
-	logging.info (f'starting server on port {port}')
+	logger.info (f'starting server on port {port}')
 	server = await asyncio.start_server (connectCb, port=port)
 	await server.serve_forever ()
 
@@ -131,7 +132,7 @@ async def addConfig (forestPath, f):
 	configFile = os.path.join (forestPath, f)
 	if not configFile.endswith ('.json'):
 		# skip files that are not configs
-		logging.error (f'{configFile} does not end with .json')
+		logger.error (f'{configFile} does not end with .json')
 		return
 
 	try:
@@ -167,9 +168,9 @@ async def addConfig (forestPath, f):
 		# XXX: delete old config?
 		routes[route['key']] = route
 
-		logging.info (f'configured route {route["key"]} → {route["socket"]}')
+		logger.info (f'configured route {route["key"]} → {route["socket"]}')
 	except Exception as e:
-		logging.error (e)
+		logger.error (e)
 		#os.unlink (configFile)
 
 async def watch (loop, forestPath):
@@ -184,15 +185,15 @@ async def watch (loop, forestPath):
 	permissions = stat.S_IMODE (fstat.st_mode)
 	expect = 0o3713
 	if permissions != expect:
-		logging.error (f'Permissions on forest directory {forestPath} are not correct. Is 0{permissions:o} should be 0{expect:o}')
+		logger.error (f'Permissions on forest directory {forestPath} are not correct. Is 0{permissions:o} should be 0{expect:o}')
 		return
 
 	# add existing files
-	logging.info (f'reading existing configs in {forestPath}')
+	logger.info (f'reading existing configs in {forestPath}')
 	for f in os.listdir (forestPath):
 		await addConfig (forestPath, f)
 
-	logging.info ('starting watcher')
+	logger.info ('starting watcher')
 	watcher = aionotify.Watcher()
 	watcher.watch (path=forestPath, flags=aionotify.Flags.MOVED_TO)
 
@@ -206,12 +207,16 @@ async def watch (loop, forestPath):
 	watcher.close ()
 
 def main ():
-	logging.basicConfig (level=logging.INFO)
 	parser = argparse.ArgumentParser(description='conductor server part')
 	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
+	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('forest', default='forest', help='Local forest path')
 
 	args = parser.parse_args()
+	if args.verbose:
+		logging.basicConfig (level=logging.DEBUG)
+	else:
+		logging.basicConfig (level=logging.WARN)
 
 	loop = asyncio.get_event_loop ()
 	loop.create_task (proxy (args.port))
