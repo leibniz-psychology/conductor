@@ -1,4 +1,4 @@
-import asyncio, socket, os, struct, stat, json, logging, argparse
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools
 from http.cookies import BaseCookie
 
 import aionotify
@@ -11,17 +11,30 @@ from .util import copy
 logger = logging.getLogger (__name__)
 routes = {}
 
+def handleException (func):
+	""" XXX: Should probably use some http library here? """
+	@functools.wraps(func)
+	async def wrapped(*args):
+		 # Some fancy foo stuff
+		try:
+			return await func(*args)
+		except Exception as e:
+			reader, writer = args
+			logger.error (f'exception {e.args}')
+			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
+			writer.close ()
+	return wrapped
+
+@handleException
 async def connectCb (reader, writer):
 	# simple HTTP parsing
 	l = (await reader.readline ()).rstrip (b'\r\n')
 	method, path, proto = l.split (b' ')
+
 	headers = CIMultiDict ()
 	while True:
 		if len (headers) > 100:
-			logger.error ('too many headers')
-			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
-			writer.close ()
-			return
+			raise Exception ('too many headers')
 
 		l = (await reader.readline ()).rstrip (b'\r\n')
 		# end of headers?
