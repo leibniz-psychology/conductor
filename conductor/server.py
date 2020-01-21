@@ -1,4 +1,4 @@
-import asyncio, socket, os, struct, stat, json, logging, argparse, functools
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback
 from http.cookies import BaseCookie
 
 import aionotify
@@ -20,6 +20,7 @@ def handleException (func):
 			return await func(*args)
 		except Exception as e:
 			reader, writer = args
+			traceback.print_exc()
 			logger.error (f'exception {e.args}')
 			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
 			writer.close ()
@@ -48,10 +49,11 @@ async def connectCb (reader, writer):
 
 	logger.debug (f'{path} {method} got headers {headers}')
 
+	host = ''
 	try:
 		host, _ = headers['host'].split ('.', 1)
 		route = routes[host]
-	except KeyError:
+	except (KeyError, ValueError):
 		logger.info (f'cannot find route for host {host}')
 		# XXX: add url as parameter to the redirect url, so the target can then
 		# redirect back after starting the instance
@@ -128,13 +130,13 @@ async def connectCb (reader, writer):
 	b = asyncio.ensure_future (copy (reader, sockwriter))
 	await asyncio.wait ([a, b])
 
-async def proxy (port):
+async def proxy (port=None, sock=None):
 	"""
 	Start public proxy worker
 	"""
 
 	logger.info (f'starting server on port {port}')
-	server = await asyncio.start_server (connectCb, port=port)
+	server = await asyncio.start_server (connectCb, port=port, sock=sock)
 	await server.serve_forever ()
 
 async def addConfig (forestPath, f):
@@ -222,6 +224,7 @@ async def watch (loop, forestPath):
 def main ():
 	parser = argparse.ArgumentParser(description='conductor server part')
 	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
+	parser.add_argument ('-s', '--sock', default=None, help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('forest', default='forest', help='Local forest path')
 
@@ -231,7 +234,18 @@ def main ():
 	else:
 		logging.basicConfig (level=logging.WARN)
 
+	if args.sock:
+		sock = socket.socket (socket.AF_UNIX)
+		if os.path.exists (args.sock):
+			os.unlink (args.sock)
+		sock.bind (args.sock)
+		os.chmod (args.sock, 0o660)
+		port = None
+	else:
+		sock = None
+		port = args.port
+
 	loop = asyncio.get_event_loop ()
-	loop.create_task (proxy (args.port))
+	loop.create_task (proxy (port, sock))
 	loop.run_until_complete (watch (loop, args.forest))
 
