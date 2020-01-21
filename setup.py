@@ -14,6 +14,7 @@ setup(
     install_requires=[
 		'asyncssh',
 		'yarl',
+		'aionotify',
     ],
     python_requires='>=3.7',
     entry_points={
