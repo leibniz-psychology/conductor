@@ -1,15 +1,22 @@
 import asyncio, logging, argparse, sys, json, os, signal, secrets, getpass
 from functools import partial
 from tempfile import NamedTemporaryFile
+from enum import unique, IntEnum
 import asyncssh
 
-from .util import copy
+from .util import copy, socketListener
 
 logger = logging.getLogger (__name__)
 
 def randomSecret (n):
 	alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
 	return ''.join (secrets.choice (alphabet) for i in range (n))
+
+@unique
+class ExitCode (IntEnum):
+	OK = 0
+	ERROR = 1
+	SOCKET_USED = 2
 
 class Client ():
 	"""
@@ -19,7 +26,8 @@ class Client ():
 	socket. Writes config file to pipe client.
 	"""
 
-	def __init__ (self, forestpath, pipeCmd, localsocket, host, port, command, token):
+	def __init__ (self, forestpath, pipeCmd, localsocket, host, port, command,
+			token, replace=False):
 		self.host = host
 		self.port = port
 		self.forestpath = os.path.realpath (forestpath)
@@ -27,6 +35,7 @@ class Client ():
 		self.localsocket = localsocket
 		self.command = command
 		self.token = token
+		self.replace = replace
 
 	async def handler (self, reader, writer):
 		sockreader = None
@@ -52,7 +61,27 @@ class Client ():
 		# always accept
 		return self.handler
 
+	@staticmethod
+	def checkSocketExists (path, replace=False):
+		if os.path.exists (path):
+			try:
+				pid = socketListener (path)
+				if replace:
+					logger.error (f'Killing PID {pid}')
+					os.kill (pid, signal.SIGTERM)
+				else:
+					logger.error (f'PID {pid} is already listening on {path}')
+					raise FileExistsError ()
+			except KeyError:
+				logger.debug (f'removing stale socket {path}')
+				os.unlink (path)
+
 	async def run (self):
+		try:
+			self.checkSocketExists (self.localsocket, self.replace)
+		except FileExistsError:
+			return ExitCode.SOCKET_USED
+
 		logger.debug (f'connecting to {self.host}:{self.port} via SSH')
 		async with asyncssh.connect (self.host, port=self.port) as conn:
 			logger.debug (f'executing command {self.command}')
@@ -98,6 +127,7 @@ class Client ():
 						commandproc.kill ()
 					ret = await commandproc.wait ()
 					logger.debug (f'command returned {ret}')
+		return ExitCode.OK
 
 def parseSSHPath (s):
 	host, path = s.split (':', 1)
@@ -107,6 +137,7 @@ def main ():
 	parser = argparse.ArgumentParser(description='conductor client')
 	parser.add_argument ('-c', '--pipe', default='conductor-pipe', help='Remote pipe command')
 	parser.add_argument ('-p', '--port', type=int, default=22, help='SSH port')
+	parser.add_argument ('-r', '--replace', action='store_true', help='Replace existing process')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('forest', type=parseSSHPath, help='Remote forest path')
 	parser.add_argument ('socket', help='Local socket to connect to')
@@ -123,7 +154,7 @@ def main ():
 		parser.exit (1, 'Missing environment variable CONDUCTOR_TOKEN\n')
 
 	client = Client (args.forest[1], args.pipe, args.socket, args.forest[0], args.port,
-			args.command, token)
+			args.command, token, replace=args.replace)
 
 	run = asyncio.ensure_future (client.run ())
 	loop = asyncio.get_event_loop ()
@@ -131,7 +162,7 @@ def main ():
 	for sig in (signal.SIGINT, signal.SIGTERM):
 		loop.add_signal_handler (sig, stop, sig)
 	try:
-		loop.run_until_complete (run)
+		return loop.run_until_complete (run)
 	except asyncio.CancelledError:
 		pass
 
