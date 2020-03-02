@@ -1,0 +1,12 @@
+[Unit]
+Description=SSH-based forwarding
+
+[Service]
+ExecStart=/var/guix/profiles/per-user/root/guix-profile/bin/conductor-server /var/forest
+StandardOutput=syslog
+StandardError=syslog
+User=conductor
+Group=conductor
+
+[Install]
+WantedBy=multi-user.target
