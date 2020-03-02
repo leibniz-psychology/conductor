@@ -4,7 +4,7 @@ Conductor
 conductor provides self-service application forwarding to a public web gateway
 for compute cluster users.
 
-.. image:: conductor.png
+.. figure:: conductor.png
 
 	Overview
 
@@ -34,4 +34,29 @@ Security considerations
 - Only the owner of a config file and socket can delete them due to o+t
 - Frontend servers should limit user’s abilities to consume resources to avoid
   DoS
+
+Usage
+-----
+
+A guix package description is provided in ``contrib/conductor.scm``, which can
+be activated using:
+
+.. code:: console
+
+    guix package -f contrib/conductor.scm
+
+If you’re using systemd copy the service file:
+
+.. code:: console
+
+    cp contrib/conductor.service /etc/systemd/system/conductor.service
+
+Then adjust the paths, add a user and group ``conductor`` and start it with
+``systemctl enable conductor && systemctl start conductor``.
+
+Finally a user can run software using
+
+.. code:: console
+
+    CONDUCTOR_TOKEN=mysecuretoken conductor host:/var/forest app.socket -- my-application
 
