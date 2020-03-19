@@ -152,6 +152,8 @@ def main ():
 	token = os.getenv ('CONDUCTOR_TOKEN', None)
 	if token is None:
 		parser.exit (1, 'Missing environment variable CONDUCTOR_TOKEN\n')
+	# make sure the token does not spill into any subprocesses we start
+	os.unsetenv ('CONDUCTOR_TOKEN')
 
 	client = Client (args.forest[1], args.pipe, args.socket, args.forest[0], args.port,
 			args.command, token, replace=args.replace)
