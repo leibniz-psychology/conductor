@@ -4,6 +4,7 @@
   #:use-module (gnu packages python-xyz)
   #:use-module (gnu packages python-web)
   #:use-module (gnu packages check)
+  #:use-module (zpid packages asyncssh)
   #:use-module (guix packages)
   #:use-module (guix download)
   #:use-module (guix build-system python)
