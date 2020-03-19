@@ -30,9 +30,10 @@ def handleException (func):
 Route = namedtuple ('Route', ['socket', 'key', 'auth'])
 
 class Conductor:
-	__slots__ = ('routes', )
+	__slots__ = ('routes', 'domain')
 
-	def __init__ (self):
+	def __init__ (self, domain=None):
+		self.domain = domain.split ('.') if domain else []
 		self.routes = {}
 
 	@handleException
@@ -58,16 +59,20 @@ class Conductor:
 
 		logger.debug (f'{path} {method} got headers {headers}')
 
-		host = ''
+		host = tuple ()
 		try:
-			host, _ = headers['host'].split ('.', 1)
+			host = headers['host'].split ('.')
+			if self.domain:
+				domainLen = len (self.domain)
+				if host[-domainLen:] != self.domain:
+					logger.info (f'domain of {host} does not end with {self.domain}')
+					raise ValueError ()
+				host = host[:-domainLen]
+			host = tuple (host)
 			route = self.routes[host]
 		except (KeyError, ValueError):
 			logger.info (f'cannot find route for host {host}')
-			# XXX: add url as parameter to the redirect url, so the target can then
-			# redirect back after starting the instance
-			url = URL ('http://localhost:8000/') / 'project' / host / 'start'
-			writer.write (b'HTTP/1.0 302 Found\r\nLocation: ' + str (url).encode ('utf8') + b'\r\n\r\n')
+			writer.write (b'HTTP/1.0 404 Not Found\r\n\r\n')
 			writer.close ()
 			return
 
@@ -116,10 +121,7 @@ class Conductor:
 		except (ConnectionRefusedError, FileNotFoundError, PermissionError):
 			logger.info (f'route is broken')
 			del self.routes[host]
-			# XXX: add url as parameter to the redirect url, so the target can then
-			# redirect back after starting the instance
-			url = URL ('http://localhost:8000/') / 'project' / host / 'start'
-			writer.write (b'HTTP/1.0 302 Found\r\nLocation: ' + str (url).encode ('utf8') + b'\r\n\r\n')
+			writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
 			writer.close ()
 			return
 
@@ -149,6 +151,7 @@ class Conductor:
 		await server.serve_forever ()
 
 	def addRoute (self, route):
+		assert isinstance (route.key, tuple)
 		# XXX: delete old config?
 		self.routes[route.key] = route
 		logger.info (f'configured route {route.key} → {route.socket}')
@@ -210,11 +213,12 @@ class Forest:
 				raise Exception (f'{socketPath} not a socket')
 
 			user = getUser (cstat.st_uid)
-			route = Route (socket=socketPath, key=user['name'], auth=o['auth'])
+			key = tuple (o.get ('key', []) + [user['name']])
+			route = Route (socket=socketPath, key=key, auth=o['auth'])
 
 			self.proxy.addRoute (route)
 		except Exception as e:
-			logger.error ('addConfig for {f} failed: {e}')
+			logger.error (f'addConfig for {f} failed: {e}')
 			#os.unlink (configFile)
 
 	async def run (self):
@@ -245,6 +249,7 @@ def main ():
 	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
 	parser.add_argument ('-s', '--sock', default=None, help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
+	parser.add_argument ('-d', '--domain', default=None, help='Domain')
 	parser.add_argument ('forest', default='forest', help='Local forest path')
 
 	args = parser.parse_args()
@@ -265,7 +270,7 @@ def main ():
 		port = args.port
 
 	loop = asyncio.get_event_loop ()
-	proxy = Conductor ()
+	proxy = Conductor (args.domain)
 	loop.create_task (proxy.run (port, sock))
 	forest = Forest (args.forest, proxy)
 	loop.run_until_complete (forest.run ())

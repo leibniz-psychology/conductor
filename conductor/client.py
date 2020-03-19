@@ -27,7 +27,7 @@ class Client ():
 	"""
 
 	def __init__ (self, forestpath, pipeCmd, localsocket, host, port, command,
-			token, replace=False):
+			token, replace=False, key=None):
 		self.host = host
 		self.port = port
 		self.forestpath = os.path.realpath (forestpath)
@@ -36,6 +36,7 @@ class Client ():
 		self.command = command
 		self.token = token
 		self.replace = replace
+		self.key = key
 
 	async def handler (self, reader, writer):
 		sockreader = None
@@ -109,6 +110,8 @@ class Client ():
 						return
 
 			config = {'socket': sockpath, 'auth': self.token}
+			if self.key:
+				config['key'] = self.key
 			logger.debug (f'writing config to pipe {config}')
 			pipeproc.stdin.write (json.dumps (config) + '\n')
 
@@ -139,6 +142,7 @@ def main ():
 	parser.add_argument ('-p', '--port', type=int, default=22, help='SSH port')
 	parser.add_argument ('-r', '--replace', action='store_true', help='Replace existing process')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
+	parser.add_argument ('-k', '--key', type=lambda x: x.split ('.'), default=None, help='Subdomain')
 	parser.add_argument ('forest', type=parseSSHPath, help='Remote forest path')
 	parser.add_argument ('socket', help='Local socket to connect to')
 	parser.add_argument ('command', nargs=argparse.REMAINDER, help='Command to run')
@@ -156,7 +160,7 @@ def main ():
 	os.unsetenv ('CONDUCTOR_TOKEN')
 
 	client = Client (args.forest[1], args.pipe, args.socket, args.forest[0], args.port,
-			args.command, token, replace=args.replace)
+			args.command, token, replace=args.replace, key=args.key)
 
 	run = asyncio.ensure_future (client.run ())
 	loop = asyncio.get_event_loop ()
