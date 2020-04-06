@@ -66,13 +66,13 @@ class Client ():
 	def checkSocketExists (path, replace=False):
 		if os.path.exists (path):
 			try:
-				pid = socketListener (path)
-				if replace:
-					logger.error (f'Killing PID {pid}')
-					os.kill (pid, signal.SIGTERM)
-				else:
-					logger.error (f'PID {pid} is already listening on {path}')
-					raise FileExistsError ()
+				for pid in socketListener (path):
+					if replace:
+						logger.error (f'Killing PID {pid}')
+						os.kill (pid, signal.SIGTERM)
+					else:
+						logger.error (f'PID {pid} is already listening on {path}')
+						raise FileExistsError ()
 			except KeyError:
 				logger.debug (f'removing stale socket {path}')
 				os.unlink (path)

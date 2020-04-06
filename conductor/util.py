@@ -65,20 +65,20 @@ def listProcesses ():
 
 def socketListener (path):
 	"""
-	Check if someone is listening on socket path and return its PID if possible
+	Return PIDs of everyone listening on socket ``path``.
 	"""
 
 	inodes = list (filter (lambda x: x.path == path, listSockets ()))
 	if not inodes:
 		raise KeyError ('path not found')
-	assert len (inodes) <= 1
 
-	inode = inodes[0].inode
+	ret = []
+	for x in inodes:
+		inode = x.inode
 
-	for pid, files in listProcesses ():
-		for f in files:
-			if f == f'socket:[{inode}]':
-				return pid
-	# no process information available
-	return None
+		for pid, files in listProcesses ():
+			for f in files:
+				if f == f'socket:[{inode}]':
+					ret.append (pid)
+	return ret
 

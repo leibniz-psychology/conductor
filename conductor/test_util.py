@@ -46,7 +46,7 @@ async def test_listProcesses (socketServer):
 
 @pytest.mark.asyncio
 async def test_socketListener_exist (socketServer):
-	assert socketListener (socketServer) == os.getpid ()
+	assert socketListener (socketServer) == [os.getpid ()]
 
 @pytest.mark.asyncio
 async def test_socketListener_missing ():
