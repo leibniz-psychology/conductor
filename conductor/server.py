@@ -19,7 +19,7 @@ def handleException (func):
 		try:
 			return await func(*args)
 		except Exception as e:
-			reader, writer = args
+			self, reader, writer = args
 			traceback.print_exc()
 			logger.error (f'exception {e.args}')
 			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
@@ -30,10 +30,10 @@ def handleException (func):
 Route = namedtuple ('Route', ['socket', 'key', 'auth'])
 
 class Conductor:
-	__slots__ = ('routes', 'domain')
+	__slots__ = ('routes', 'domains')
 
-	def __init__ (self, domain=None):
-		self.domain = domain.split ('.') if domain else []
+	def __init__ (self, domains=None):
+		self.domains = [x.split ('.') for x in domains] if domains else []
 		self.routes = {}
 
 	@handleException
@@ -62,12 +62,17 @@ class Conductor:
 		host = tuple ()
 		try:
 			host = headers['host'].split ('.')
-			if self.domain:
-				domainLen = len (self.domain)
-				if host[-domainLen:] != self.domain:
-					logger.info (f'domain of {host} does not end with {self.domain}')
-					raise ValueError ()
-				host = host[:-domainLen]
+			# ignore, if empty
+			foundDomain = not self.domains
+			for d in self.domains:
+				domainLen = len (d)
+				if host[-domainLen:] == d:
+					foundDomain = True
+					host = host[:-domainLen]
+					break
+			if not foundDomain:
+				logger.info (f'domain of {host} does not end with {self.domains}')
+				raise ValueError ()
 			host = tuple (host)
 			route = self.routes[host]
 		except (KeyError, ValueError):
@@ -249,7 +254,7 @@ def main ():
 	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
 	parser.add_argument ('-s', '--sock', default=None, help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
-	parser.add_argument ('-d', '--domain', default=None, help='Domain')
+	parser.add_argument ('-d', '--domain', action='append', help='Domains')
 	parser.add_argument ('forest', default='forest', help='Local forest path')
 
 	args = parser.parse_args()
