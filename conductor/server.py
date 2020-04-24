@@ -1,4 +1,4 @@
-import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, re
 from http.cookies import BaseCookie
 from collections import namedtuple
 
@@ -28,12 +28,13 @@ def handleException (func):
 
 # a route from key.domain to socket with auth
 Route = namedtuple ('Route', ['socket', 'key', 'auth'])
+RouteKey = namedtuple ('RouteKey', ['key', 'user'])
 
 class Conductor:
-	__slots__ = ('routes', 'domains')
+	__slots__ = ('routes', 'domain')
 
-	def __init__ (self, domains=None):
-		self.domains = [x.split ('.') for x in domains] if domains else []
+	def __init__ (self, domain):
+		self.domain = domain
 		self.routes = {}
 
 	@handleException
@@ -59,22 +60,15 @@ class Conductor:
 
 		logger.debug (f'{path} {method} got headers {headers}')
 
-		host = tuple ()
 		try:
-			host = headers['host'].split ('.')
-			# ignore, if empty
-			foundDomain = not self.domains
-			for d in self.domains:
-				domainLen = len (d)
-				if host[-domainLen:] == d:
-					foundDomain = True
-					host = host[:-domainLen]
-					break
-			if not foundDomain:
-				logger.info (f'domain of {host} does not end with {self.domains}')
+			host = headers['host']
+			m = self.domain.match (host)
+			if m is not None:
+				routeKey = RouteKey (key=m.group ('key'), user=m.group ('user'))
+				logger.debug (f'got route key {routeKey}')
+			else:
 				raise ValueError ()
-			host = tuple (host)
-			route = self.routes[host]
+			route = self.routes[routeKey]
 		except (KeyError, ValueError):
 			logger.info (f'cannot find route for host {host}')
 			writer.write (b'HTTP/1.0 404 Not Found\r\n\r\n')
@@ -125,7 +119,7 @@ class Conductor:
 			sockreader, sockwriter = await asyncio.open_unix_connection (path=route.socket)
 		except (ConnectionRefusedError, FileNotFoundError, PermissionError):
 			logger.info (f'route is broken')
-			del self.routes[host]
+			del self.routes[routeKey]
 			writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
 			writer.close ()
 			return
@@ -218,7 +212,7 @@ class Forest:
 				raise Exception (f'{socketPath} not a socket')
 
 			user = getUser (cstat.st_uid)
-			key = tuple (o.get ('key', []) + [user['name']])
+			key = RouteKey (key=str (o.get ('key')), user=user['name'])
 			route = Route (socket=socketPath, key=key, auth=o['auth'])
 
 			self.proxy.addRoute (route)
@@ -251,11 +245,15 @@ class Forest:
 
 def main ():
 	parser = argparse.ArgumentParser(description='conductor server part')
-	parser.add_argument ('-p', '--port', default=8888, type=int, help='Listen port')
-	parser.add_argument ('-s', '--sock', default=None, help='Listen port')
+	parser.add_argument ('-p', '--port', default=8888, type=int,
+		metavar='PORT', help='Listen port')
+	parser.add_argument ('-s', '--sock', default=None, metavar='PATH',
+		help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
-	parser.add_argument ('-d', '--domain', action='append', help='Domains')
-	parser.add_argument ('forest', default='forest', help='Local forest path')
+	parser.add_argument ('domain', type=lambda x: re.compile (x, re.I),
+			metavar='REGEX', help='Domain pattern')
+	parser.add_argument ('forest', default='forest', metavar='PATH',
+		help='Local forest path')
 
 	args = parser.parse_args()
 	if args.verbose:

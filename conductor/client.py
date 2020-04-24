@@ -142,7 +142,7 @@ def main ():
 	parser.add_argument ('-p', '--port', type=int, default=22, help='SSH port')
 	parser.add_argument ('-r', '--replace', action='store_true', help='Replace existing process')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
-	parser.add_argument ('-k', '--key', type=lambda x: x.split ('.'), default=None, help='Subdomain')
+	parser.add_argument ('-k', '--key', default='', help='Subdomain')
 	parser.add_argument ('forest', type=parseSSHPath, help='Remote forest path')
 	parser.add_argument ('socket', help='Local socket to connect to')
 	parser.add_argument ('command', nargs=argparse.REMAINDER, help='Command to run')
