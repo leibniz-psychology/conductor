@@ -2,21 +2,63 @@
 Miscellaneous utility functions
 """
 
-import platform, re, os
+import platform, re, os, asyncio
 from collections import namedtuple
 
 async def copy (source, dest):
+	copied = 0
+	while True:
+		buf = await source.read (4096)
+		if not buf:
+			break
+		foo = dest.write (buf)
+		assert foo is None
+		copied += len (buf)
+	return copied
+
+async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None):
+	"""
+	Bi-directional proxying for tuple of (StreamReader, StreamWriter, str)
+	"""
+
+	eaReader, eaWriter, eaName = endpointa
+	ebReader, ebWriter, ebName = endpointb
+
+	# proxy everything
 	try:
-		while True:
-			buf = await source.read (4096)
-			if not buf:
-				dest.close ()
-				break
-			foo = dest.write (buf)
-			assert foo is None
+		a = asyncio.ensure_future (copy (eaReader, ebWriter))
+		b = asyncio.ensure_future (copy (ebReader, eaWriter))
+		pending = [a, b]
+		while pending:
+			done, pending = await asyncio.wait (pending, return_when=asyncio.FIRST_COMPLETED)
+			logger.debug (f'{logPrefix}: done {done} pending {pending}')
+			if a in done:
+				if beforeABClose is not None:
+					await beforeABClose (a.result ())
+				logger.debug (f'{logPrefix}: copy {eaName}->{ebName} is done, closing')
+				ebWriter.close ()
+			if b in done:
+				logger.debug (f'{logPrefix}: copy {ebName}->{eaName} is done, closing')
+				eaWriter.close ()
+		# discard results
+		a.result ()
+		b.result ()
+	except BrokenPipeError:
+		logger.debug (f'{logPrefix}: broken pipe')
 	except ConnectionResetError:
-		# this is fine
-		pass
+		logger.debug (f'{logPrefix}: connection reset')
+	except Exception as e:
+		logger.debug (f'{logPrefix}: unhandled exception {e}')
+		traceback.print_exc()
+	finally:
+		logger.debug (f'{logPrefix}: finalizing')
+		c = asyncio.ensure_future (eaWriter.wait_closed ())
+		d = asyncio.ensure_future (ebWriter.wait_closed ())
+		await asyncio.wait ([c, d])
+		# discard results
+		c.result ()
+		d.result ()
+		logger.debug (f'{logPrefix}: bye bye')
 
 SockInfo = namedtuple ('SockInfo', ['num', 'refCount', 'protocol', 'flags', 'type', 'st', 'inode', 'path'])
 

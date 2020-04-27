@@ -7,7 +7,7 @@ from yarl import URL
 from multidict import CIMultiDict
 
 from .nss import getUser
-from .util import copy
+from .util import proxy
 
 logger = logging.getLogger (__name__)
 
@@ -31,14 +31,20 @@ Route = namedtuple ('Route', ['socket', 'key', 'auth'])
 RouteKey = namedtuple ('RouteKey', ['key', 'user'])
 
 class Conductor:
-	__slots__ = ('routes', 'domain')
+	__slots__ = ('routes', 'domain', 'nextConnId')
 
 	def __init__ (self, domain):
 		self.domain = domain
 		self.routes = {}
+		self.nextConnId = 0
 
 	@handleException
 	async def _connectCb (self, reader, writer):
+		# connection id, for debugging
+		connid = self.nextConnId
+		self.nextConnId += 1
+
+		logger.debug (f'{connid}: new incoming connection')
 		# simple HTTP parsing
 		l = (await reader.readline ()).rstrip (b'\r\n')
 		method, path, proto = l.split (b' ')
@@ -58,19 +64,19 @@ class Conductor:
 			except ValueError:
 				logger.error (f'cannot parse {l}')
 
-		logger.debug (f'{path} {method} got headers {headers}')
+		logger.debug (f'{connid}: {path} {method} got headers {headers}')
 
 		try:
 			host = headers['host']
 			m = self.domain.match (host)
 			if m is not None:
 				routeKey = RouteKey (key=m.group ('key'), user=m.group ('user'))
-				logger.debug (f'got route key {routeKey}')
+				logger.debug (f'{connid}: got route key {routeKey}')
 			else:
 				raise ValueError ()
 			route = self.routes[routeKey]
 		except (KeyError, ValueError):
-			logger.info (f'cannot find route for host {host}')
+			logger.info (f'{connid}: cannot find route for host {host}')
 			writer.write (b'HTTP/1.0 404 Not Found\r\n\r\n')
 			writer.close ()
 			return
@@ -109,7 +115,7 @@ class Conductor:
 			return
 
 		if not authorized:
-			logger.info (f'not authorized, cookies sent {cookies.values()}')
+			logger.info (f'{connid}: not authorized, cookies sent {cookies.values()}')
 			writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\n\r\nUnauthorized')
 			writer.close ()
 			return
@@ -118,8 +124,7 @@ class Conductor:
 		try:
 			sockreader, sockwriter = await asyncio.open_unix_connection (path=route.socket)
 		except (ConnectionRefusedError, FileNotFoundError, PermissionError):
-			logger.info (f'route is broken')
-			del self.routes[routeKey]
+			logger.info (f'{connid}: route {routeKey} is broken')
 			writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
 			writer.close ()
 			return
@@ -131,14 +136,18 @@ class Conductor:
 			headers['Connection'] = 'close'
 
 		# write http banner plus headers
-		sockwriter.write (method + b' ' + path + b' ' + proto + b'\r\n')
+		sockwriter.write (method + b' ' + b'/'.join (path) + b' ' + proto + b'\r\n')
 		for k, v in headers.items ():
 			sockwriter.write (f'{k}: {v}\r\n'.encode ('utf-8'))
 		sockwriter.write (b'\r\n')
-		# then copy the body
-		a = asyncio.ensure_future (copy (sockreader, writer))
-		b = asyncio.ensure_future (copy (reader, sockwriter))
-		await asyncio.wait ([a, b])
+
+		async def beforeABClose (result):
+			if result == 0:
+				# no response received from client
+				logger.info (f'{connid}: route {routeKey} got no result from server')
+				writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
+
+		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'web'), logger=logger, logPrefix=connid, beforeABClose=beforeABClose)
 
 	async def run (self, port=None, sock=None):
 		"""

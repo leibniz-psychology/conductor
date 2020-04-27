@@ -4,7 +4,7 @@ from tempfile import NamedTemporaryFile
 from enum import unique, IntEnum
 import asyncssh
 
-from .util import copy, socketListener
+from .util import proxy, socketListener
 
 logger = logging.getLogger (__name__)
 
@@ -37,29 +37,23 @@ class Client ():
 		self.token = token
 		self.replace = replace
 		self.key = key
+		self.nextConnId = 0
 
 	async def handler (self, reader, writer):
-		sockreader = None
-		for i in range (5):
-			try:
-				sockreader, sockwriter = await asyncio.open_unix_connection (path=self.localsocket)
-				break
-			except (ConnectionRefusedError, FileNotFoundError):
-				logger.error (f'local socket {self.localsocket} not avaiable, try {i}')
-				await asyncio.sleep (1.5**i)
+		connid = self.nextConnId
+		self.nextConnId += 1
+		logger.debug (f'{connid}: new connection')
 
-		if not sockreader:
-			logger.error (f'cannot open local socket {self.localsocket}')
+		try:
+			sockreader, sockwriter = await asyncio.open_unix_connection (path=self.localsocket)
+		except Exception as e:
+			logger.error (f'{connid}: local socket {self.localsocket} not avaiable, {e}')
 			writer.close ()
 			return
 
-		# then copy the body
-		a = asyncio.ensure_future (copy (sockreader, writer))
-		b = asyncio.ensure_future (copy (reader, sockwriter))
-		await asyncio.wait ([a, b])
+		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'ssh'), logger=logger, logPrefix=connid)
 
 	def accept (self):
-		# always accept
 		return self.handler
 
 	@staticmethod
