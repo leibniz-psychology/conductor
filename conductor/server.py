@@ -48,6 +48,7 @@ class Conductor:
 		# simple HTTP parsing
 		l = (await reader.readline ()).rstrip (b'\r\n')
 		method, path, proto = l.split (b' ')
+		path = path.split (b'/')
 
 		headers = CIMultiDict ()
 		while True:
@@ -100,19 +101,21 @@ class Conductor:
 			pass
 
 		# is this an authorization request?
-		authPrefix = b'/_auth-conductor/'
-		if path.startswith (authPrefix):
-			authdata = path[len (authPrefix):]
-			logger.info (f'authorization request for {host}')
-			writer.write (b'\r\n'.join ([
-					b'HTTP/1.0 302 Found',
-					b'Location: /',
-					b'Set-Cookie: authorization=' + authdata + b'; HttpOnly; Path=/',
-					b'Cache-Control: no-store',
-					b'',
-					b'Follow the white rabbit.']))
-			writer.close ()
-			return
+		if path[1] == b'_conductor':
+			if path[2] == b'auth':
+				logger.info (f'authorization request for {host}')
+				writer.write (b'\r\n'.join ([
+						b'HTTP/1.0 302 Found',
+						b'Location: /',
+						b'Set-Cookie: authorization=' + path[3] + b'; HttpOnly; Path=/',
+						b'Cache-Control: no-store',
+						b'',
+						b'Follow the white rabbit.']))
+				writer.close ()
+				return
+			else:
+				writer.write (b'HTTP/1.0 404 Not Found\r\nContent-Type: plain/text\r\n\r\nNot found')
+				writer.close ()
 
 		if not authorized:
 			logger.info (f'{connid}: not authorized, cookies sent {cookies.values()}')
