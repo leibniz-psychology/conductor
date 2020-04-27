@@ -199,12 +199,17 @@ class Conductor:
 		self.routes[route.key] = route
 		logger.info (f'configured route {route.key} → {route.socket}')
 
+	def deleteRoute (self, key):
+		route = self.routes.pop (key)
+		logger.info (f'removed route {route.key} → {route.socket}')
+
 class Forest:
-	__slots__ = ('path', 'proxy')
+	__slots__ = ('path', 'proxy', 'pathToRoute')
 
 	def __init__ (self, path, proxy):
 		self.path = os.path.realpath (path)
 		self.proxy = proxy
+		self.pathToRoute = dict ()
 
 		self._forestPermissionCheck ()
 
@@ -260,9 +265,17 @@ class Forest:
 			route = Route (socket=socketPath, key=key, auth=o['auth'])
 
 			self.proxy.addRoute (route)
+			self.pathToRoute[f] = route
 		except Exception as e:
 			logger.error (f'addConfig for {f} failed: {e}')
 			#os.unlink (configFile)
+
+	async def removeConfig (self, f):
+		try:
+			r = self.pathToRoute.pop (f)
+			self.proxy.deleteRoute (r.key)
+		except KeyError:
+			pass
 
 	async def run (self):
 		"""
@@ -276,13 +289,16 @@ class Forest:
 
 		logger.info ('starting watcher')
 		watcher = aionotify.Watcher()
-		watcher.watch (path=self.path, flags=aionotify.Flags.MOVED_TO)
+		watcher.watch (path=self.path,
+				flags=aionotify.Flags.MOVED_TO|aionotify.Flags.DELETE)
 
 		await watcher.setup(asyncio.get_event_loop ())
 		while True:
 			event = await watcher.get_event()
 			if event.flags == aionotify.Flags.MOVED_TO:
 				await self.addConfig (event.name)
+			elif event.flags == aionotify.Flags.DELETE:
+				await self.removeConfig (event.name)
 			else:
 				assert False
 		watcher.close ()
