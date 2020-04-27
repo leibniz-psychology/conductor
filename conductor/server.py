@@ -62,7 +62,11 @@ class Conductor:
 		logger.debug (f'{connid}: new incoming connection')
 		# simple HTTP parsing
 		l = (await reader.readline ()).rstrip (b'\r\n')
-		method, path, proto = l.split (b' ')
+		try:
+			method, path, proto = l.split (b' ')
+		except ValueError:
+			logger.error (f'{connid}: cannot split line {l}')
+			raise
 		path = path.split (b'/')
 
 		headers = CIMultiDict ()
