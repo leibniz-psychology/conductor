@@ -1,4 +1,4 @@
-import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, re
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, re, time
 from http.cookies import BaseCookie
 from collections import namedtuple
 
@@ -31,15 +31,30 @@ Route = namedtuple ('Route', ['socket', 'key', 'auth'])
 RouteKey = namedtuple ('RouteKey', ['key', 'user'])
 
 class Conductor:
-	__slots__ = ('routes', 'domain', 'nextConnId')
+	__slots__ = ('routes', 'domain', 'nextConnId', 'status')
 
 	def __init__ (self, domain):
 		self.domain = domain
 		self.routes = {}
 		self.nextConnId = 0
+		self.status = dict (
+			requestTotal=0,
+			requestActive=0,
+			unauthorized=0,
+			noroute=0,
+			broken=0,
+			)
+
+	async def _connectCb (self, reader, writer):
+		self.status['requestTotal'] += 1
+		self.status['requestActive'] += 1
+		try:
+			await self.handleRequest (reader, writer)
+		finally:
+			self.status['requestActive'] -= 1
 
 	@handleException
-	async def _connectCb (self, reader, writer):
+	async def handleRequest (self, reader, writer):
 		# connection id, for debugging
 		connid = self.nextConnId
 		self.nextConnId += 1
@@ -67,6 +82,7 @@ class Conductor:
 
 		logger.debug (f'{connid}: {path} {method} got headers {headers}')
 
+		route = None
 		try:
 			host = headers['host']
 			m = self.domain.match (host)
@@ -78,6 +94,30 @@ class Conductor:
 			route = self.routes[routeKey]
 		except (KeyError, ValueError):
 			logger.info (f'{connid}: cannot find route for host {host}')
+			self.status['noroute'] += 1
+			# error is written to client later
+
+		# is this a non-forwarded request?
+		if path[1] == b'_conductor':
+			if path[2] == b'auth':
+				logger.info (f'authorization request for {host}')
+				writer.write (b'\r\n'.join ([
+						b'HTTP/1.0 302 Found',
+						b'Location: /',
+						b'Set-Cookie: authorization=' + path[3] + b'; HttpOnly; Path=/',
+						b'Cache-Control: no-store',
+						b'',
+						b'Follow the white rabbit.']))
+			elif path[2] == b'status':
+				writer.write (b'HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n')
+				self.status['routesTotal'] = len (self.routes)
+				writer.write (json.dumps (self.status, ensure_ascii=True).encode ('ascii'))
+			else:
+				writer.write (b'HTTP/1.0 404 Not Found\r\nContent-Type: plain/text\r\n\r\nNot found')
+			writer.close ()
+			return
+
+		if not route:
 			writer.write (b'HTTP/1.0 404 Not Found\r\n\r\n')
 			writer.close ()
 			return
@@ -100,36 +140,24 @@ class Conductor:
 			# nonexistent cookie is fine
 			pass
 
-		# is this an authorization request?
-		if path[1] == b'_conductor':
-			if path[2] == b'auth':
-				logger.info (f'authorization request for {host}')
-				writer.write (b'\r\n'.join ([
-						b'HTTP/1.0 302 Found',
-						b'Location: /',
-						b'Set-Cookie: authorization=' + path[3] + b'; HttpOnly; Path=/',
-						b'Cache-Control: no-store',
-						b'',
-						b'Follow the white rabbit.']))
-				writer.close ()
-				return
-			else:
-				writer.write (b'HTTP/1.0 404 Not Found\r\nContent-Type: plain/text\r\n\r\nNot found')
-				writer.close ()
-
 		if not authorized:
 			logger.info (f'{connid}: not authorized, cookies sent {cookies.values()}')
 			writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\n\r\nUnauthorized')
 			writer.close ()
+			self.status['unauthorized'] += 1
 			return
 
 		# try opening the socket
 		try:
+			start = time.time ()
 			sockreader, sockwriter = await asyncio.open_unix_connection (path=route.socket)
+			end = time.time ()
+			logger.debug (f'opening socket took {end-start}s')
 		except (ConnectionRefusedError, FileNotFoundError, PermissionError):
 			logger.info (f'{connid}: route {routeKey} is broken')
 			writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
 			writer.close ()
+			self.status['broken'] += 1
 			return
 
 		# some headers are fixed
