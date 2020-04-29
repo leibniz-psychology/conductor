@@ -52,12 +52,18 @@ async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None)
 		traceback.print_exc()
 	finally:
 		logger.debug (f'{logPrefix}: finalizing')
+		# make sure they are really closed
+		eaWriter.close ()
+		ebWriter.close ()
 		c = asyncio.ensure_future (eaWriter.wait_closed ())
 		d = asyncio.ensure_future (ebWriter.wait_closed ())
 		await asyncio.wait ([c, d])
 		# discard results
-		c.result ()
-		d.result ()
+		try:
+			c.result ()
+			d.result ()
+		except:
+			pass
 		logger.debug (f'{logPrefix}: bye bye')
 
 SockInfo = namedtuple ('SockInfo', ['num', 'refCount', 'protocol', 'flags', 'type', 'st', 'inode', 'path'])
