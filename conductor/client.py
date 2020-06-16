@@ -26,8 +26,9 @@ class Client ():
 	socket. Writes config file to pipe client.
 	"""
 
-	def __init__ (self, forestpath, pipeCmd, localsocket, host, port, command,
+	def __init__ (self, forestpath, pipeCmd, localsocket, user, host, port, command,
 			token, replace=False, key=None):
+		self.user = user
 		self.host = host
 		self.port = port
 		self.forestpath = os.path.realpath (forestpath)
@@ -77,8 +78,8 @@ class Client ():
 		except FileExistsError:
 			return ExitCode.SOCKET_USED
 
-		logger.debug (f'connecting to {self.host}:{self.port} via SSH')
-		async with asyncssh.connect (self.host, port=self.port) as conn:
+		logger.debug (f'connecting to {self.user}@{self.host}:{self.port} via SSH')
+		async with asyncssh.connect (self.host, port=self.port, username=self.user) as conn:
 			logger.debug (f'executing command {self.command}')
 			commandproc = await asyncio.create_subprocess_exec (self.command[0],
 					*self.command[1:], start_new_session=True)
@@ -127,8 +128,12 @@ class Client ():
 		return ExitCode.OK
 
 def parseSSHPath (s):
-	host, path = s.split (':', 1)
-	return host, path
+	if '@' in s:
+		user, tail = s.split ('@', 1)
+	else:
+		user, tail = None, s
+	host, path = tail.split (':', 1)
+	return user, host, path
 
 def main ():
 	parser = argparse.ArgumentParser(description='conductor client')
@@ -137,7 +142,8 @@ def main ():
 	parser.add_argument ('-r', '--replace', action='store_true', help='Replace existing process')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('-k', '--key', default='', help='Subdomain')
-	parser.add_argument ('forest', type=parseSSHPath, help='Remote forest path')
+	parser.add_argument ('forest', type=parseSSHPath,
+			help='Remote forest path, i.e. user@host:/path')
 	parser.add_argument ('socket', help='Local socket to connect to')
 	parser.add_argument ('command', nargs=argparse.REMAINDER, help='Command to run')
 
@@ -153,7 +159,8 @@ def main ():
 	# make sure the token does not spill into any subprocesses we start
 	os.unsetenv ('CONDUCTOR_TOKEN')
 
-	client = Client (args.forest[1], args.pipe, args.socket, args.forest[0], args.port,
+	client = Client (args.forest[2], args.pipe, args.socket, args.forest[0],
+			args.forest[1], args.port,
 			args.command, token, replace=args.replace, key=args.key)
 
 	run = asyncio.ensure_future (client.run ())
