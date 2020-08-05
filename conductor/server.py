@@ -1,10 +1,11 @@
-import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, re, time
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, time
 from http.cookies import BaseCookie
 from collections import namedtuple
 
 import aionotify
 from yarl import URL
 from multidict import CIMultiDict
+from parse import parse
 
 from .nss import getUser
 from .util import proxy
@@ -89,15 +90,16 @@ class Conductor:
 		route = None
 		try:
 			host = headers['host']
-			m = self.domain.match (host)
-			if m is not None:
-				routeKey = RouteKey (key=m.group ('key'), user=m.group ('user'))
-				logger.debug (f'{connid}: got route key {routeKey}')
-			else:
-				raise ValueError ()
+			routeKey = None
+			for d in self.domain:
+				m = parse (d, host)
+				if m is not None:
+					routeKey = RouteKey (key=m['key'], user=m['user'])
+					logger.debug (f'{connid}: got route key {routeKey}')
+					break
 			route = self.routes[routeKey]
 		except (KeyError, ValueError):
-			logger.info (f'{connid}: cannot find route for host {host}')
+			logger.info (f'{connid}: cannot find route for host {host} match {m} domain {self.domain}')
 			self.status['noroute'] += 1
 			# error is written to client later
 
@@ -189,7 +191,7 @@ class Conductor:
 		Start public proxy worker
 		"""
 
-		logger.info (f'starting server on port {port}')
+		logger.info (f'starting server on port {port} for domains {self.domain}')
 		server = await asyncio.start_server (self._connectCb, port=port, sock=sock)
 		await server.serve_forever ()
 
@@ -266,9 +268,24 @@ class Forest:
 
 			self.proxy.addRoute (route)
 			self.pathToRoute[f] = route
+
+			o.update (dict (urls=[d.format (key=key.key, user=key.user) for d in self.proxy.domain]))
+			logger.debug (f'updating config at {configFile}: {o}')
+			# /proc/sys/fs/protected_regular > 0 prevents using
+			# > with open (configFile, 'w') as fd:
+			# because it contains O_CREAT, so we have to do it manually
+			with os.fdopen (os.open (configFile, os.O_TRUNC|os.O_WRONLY), 'w') as fd:
+				json.dump (o, fd)
+				fd.write ('\n')
 		except Exception as e:
 			logger.error (f'addConfig for {f} failed: {e}')
-			#os.unlink (configFile)
+			try:
+				with os.fdopen (os.open (configFile, os.O_TRUNC|os.O_WRONLY), 'w') as fd:
+					json.dump (dict (status='error', reason=e.args[0]), fd)
+					fd.write ('\n')
+			except PermissionError:
+				# can’t write error, sorry
+				logger.error (f'not allowed to write error to config {configFile} ')
 
 	async def removeConfig (self, f):
 		try:
@@ -310,8 +327,7 @@ def main ():
 	parser.add_argument ('-s', '--sock', default=None, metavar='PATH',
 		help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
-	parser.add_argument ('domain', type=lambda x: re.compile (x, re.I),
-			metavar='REGEX', help='Domain pattern')
+	parser.add_argument ('domain', nargs='+', metavar='DOMAIN', help='Domain match pattern')
 	parser.add_argument ('forest', default='forest', metavar='PATH',
 		help='Local forest path')
 

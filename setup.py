@@ -15,6 +15,7 @@ setup(
 		'asyncssh',
 		'yarl',
 		'aionotify',
+		'parse',
     ],
     python_requires='>=3.7',
     entry_points={

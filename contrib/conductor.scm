@@ -24,6 +24,7 @@
    `(("python-asyncssh" ,python-asyncssh)
      ("python-yarl" ,python-yarl)
      ("python-aionotify" ,zpid:python-aionotify)
+     ("python-parse" ,python-parse)
      ("python-pytest" ,python-pytest)))
   (home-page "https://github.com/leibniz-psychology/conductor")
   (synopsis #f)

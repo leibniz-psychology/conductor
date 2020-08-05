@@ -2,7 +2,7 @@
 Description=SSH-based forwarding
 
 [Service]
-ExecStart=/var/guix/profiles/per-user/root/guix-profile/bin/conductor-server '^(?P<key>[a-z0-9]+)-(?P<user>[a-z0-9]+)\\.example\\.com$' /var/forest
+ExecStart=/var/guix/profiles/per-user/root/guix-profile/bin/conductor-server '{key}-{user}.user.example.com' /var/forest
 StandardOutput=syslog
 StandardError=syslog
 User=conductor
