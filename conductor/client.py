@@ -148,6 +148,11 @@ class Client ():
 			try:
 				buf = await pipeproc.stdout.readline ()
 				config = json.loads (buf)
+				# check server response
+				status = config.get ('status', 'ok')
+				if status == 'error':
+					writeJson (dict (state='failed', reason=config.get ('reason', 'No reason given')))
+					return ExitCode.ERROR
 
 				writeJson (dict (state='live', config=config))
 				done, pending = await asyncio.wait ([pipeproc.wait (), listener.wait_closed (),

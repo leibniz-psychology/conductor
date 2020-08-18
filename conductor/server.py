@@ -196,8 +196,9 @@ class Conductor:
 		await server.serve_forever ()
 
 	def addRoute (self, route):
-		assert isinstance (route.key, tuple)
-		# XXX: delete old config?
+		assert isinstance (route.key, RouteKey)
+		if route.key in self.routes:
+			raise KeyError ('exists')
 		self.routes[route.key] = route
 		logger.info (f'configured route {route.key} → {route.socket}')
 
