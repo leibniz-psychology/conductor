@@ -101,7 +101,9 @@ class Client ():
 			return ExitCode.SOCKET_USED
 
 		writeJson (dict (state='connect', user=self.user, host=self.host, port=self.port))
-		async with asyncssh.connect (self.host, port=self.port, username=self.user) as conn:
+		# remove null arguments
+		connectArgs = dict (filter (lambda x: x[1], [('host', self.host), ('port', self.port), ('user', self.user)]))
+		async with asyncssh.connect (**connectArgs) as conn:
 			commandproc = await asyncio.create_subprocess_exec (self.command[0],
 					*self.command[1:], start_new_session=True,
 					stdout=subprocess.PIPE, stderr=subprocess.PIPE)
