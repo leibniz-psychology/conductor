@@ -2,6 +2,7 @@ import asyncio, logging, argparse, sys, json, os, signal, secrets, getpass, subp
 from functools import partial
 from tempfile import NamedTemporaryFile
 from enum import unique, IntEnum
+from hashlib import blake2b
 
 import asyncssh, aionotify
 
@@ -135,6 +136,7 @@ class Client ():
 			if self.key:
 				config['key'] = self.key
 			writeJson (dict (state='config', config=config))
+			config['auth'] = blake2b (self.token.encode ('utf-8')).hexdigest ()
 			pipeproc.stdin.write (json.dumps (config) + '\n')
 
 			# wait for the application to become live, i.e. socket exists and server responds
@@ -155,6 +157,8 @@ class Client ():
 				if status == 'error':
 					writeJson (dict (state='failed', reason=config.get ('reason', 'No reason given')))
 					return ExitCode.ERROR
+				# Server only knows the hashed token, but client should get the unhashed value.
+				config['auth'] = self.token
 
 				writeJson (dict (state='live', config=config))
 				done, pending = await asyncio.wait ([pipeproc.wait (), listener.wait_closed (),

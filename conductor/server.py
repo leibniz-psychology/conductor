@@ -1,6 +1,7 @@
 import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, time
 from http.cookies import BaseCookie
 from collections import namedtuple
+from hashlib import blake2b
 
 import aionotify
 from yarl import URL
@@ -137,9 +138,12 @@ class Conductor:
 			pass
 		authorized = False
 		for c in cookies.values ():
-			if c.key == 'authorization' and c.value == route.auth:
+			# Only hashed authorization is available to server.
+			if c.key == 'authorization' and blake2b (c.value.encode ('utf-8')).hexdigest () == route.auth:
 				authorized = True
+				break
 		try:
+			# do not forward auth cookie to the application, so it can’t leak it.
 			del cookies['authorization']
 			headers['Cookie'] = cookies.output (header='', sep='')
 		except KeyError:
