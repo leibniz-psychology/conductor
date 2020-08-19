@@ -13,8 +13,8 @@ setup(
     long_description_content_type='text/x-rst',
     install_requires=[
 		'asyncssh',
-		'yarl',
 		'aionotify',
+		'multidict',
 		'parse',
     ],
     python_requires='>=3.7',

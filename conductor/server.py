@@ -4,7 +4,6 @@ from collections import namedtuple
 from hashlib import blake2b
 
 import aionotify
-from yarl import URL
 from multidict import CIMultiDict
 from parse import parse
 

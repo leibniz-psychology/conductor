@@ -21,8 +21,8 @@
   (build-system python-build-system)
   (propagated-inputs
    `(("python-asyncssh" ,python-asyncssh)
-     ("python-yarl" ,python-yarl)
      ("python-aionotify" ,python-aionotify)
+     ("python-multidict" ,python-multidict)
      ("python-parse" ,python-parse)
      ("python-pytest" ,python-pytest)))
   (home-page "https://github.com/leibniz-psychology/conductor")
