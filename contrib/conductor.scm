@@ -5,7 +5,6 @@
   #:use-module (gnu packages python-web)
   #:use-module (gnu packages check)
   #:use-module (zpid packages asyncssh)
-  #:use-module ((zpid packages aionotify) #:prefix zpid:)
   #:use-module (guix packages)
   #:use-module (guix download)
   #:use-module (guix build-system python)
@@ -23,7 +22,7 @@
   (propagated-inputs
    `(("python-asyncssh" ,python-asyncssh)
      ("python-yarl" ,python-yarl)
-     ("python-aionotify" ,zpid:python-aionotify)
+     ("python-aionotify" ,python-aionotify)
      ("python-parse" ,python-parse)
      ("python-pytest" ,python-pytest)))
   (home-page "https://github.com/leibniz-psychology/conductor")
