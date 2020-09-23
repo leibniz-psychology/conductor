@@ -169,11 +169,16 @@ class Client ():
 				ret = commandproc.returncode
 				if ret is None:
 					logger.debug ('terminating command')
-					commandproc.terminate ()
+					# We’re starting commandproc above with
+					# start_new_session=True, which means it will be leader of
+					# a new process group with its PID. Kill the whole process
+					# group in case the started process does not forward
+					# signals to its children.
+					os.killpg (commandproc.pid, signal.SIGTERM)
 					try:
 						ret = await asyncio.wait_for(commandproc.wait (), timeout=3.0)
 					except asyncio.TimeoutError:
-						commandproc.kill ()
+						os.killpg (commandproc.pid, signal.SIGKILL)
 						ret = await commandproc.wait ()
 				writeJson (dict (state='exit', status=ret))
 
