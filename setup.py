@@ -15,6 +15,7 @@ setup(
 		'asyncssh',
 		'aionotify',
 		'multidict',
+		'furl',
 		'parse',
     ],
     python_requires='>=3.7',

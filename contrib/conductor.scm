@@ -24,6 +24,7 @@
      ("python-aionotify" ,python-aionotify)
      ("python-multidict" ,python-multidict)
      ("python-parse" ,python-parse)
+     ("python-furl" ,python-furl)
      ("python-pytest" ,python-pytest)))
   (home-page "https://github.com/leibniz-psychology/conductor")
   (synopsis #f)

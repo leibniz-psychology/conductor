@@ -2,6 +2,7 @@ import asyncio, socket, os, struct, stat, json, logging, argparse, functools, tr
 from http.cookies import BaseCookie
 from collections import namedtuple
 from hashlib import blake2b
+from furl import furl
 
 import aionotify
 from multidict import CIMultiDict
@@ -64,11 +65,11 @@ class Conductor:
 		# simple HTTP parsing
 		l = (await reader.readline ()).rstrip (b'\r\n')
 		try:
-			method, path, proto = l.split (b' ')
+			method, rawPath, proto = l.split (b' ')
 		except ValueError:
 			logger.error (f'{connid}: cannot split line {l}')
 			raise
-		path = path.split (b'/')
+		reqUrl = furl (rawPath.decode ('utf-8'))
 
 		headers = CIMultiDict ()
 		while True:
@@ -85,11 +86,17 @@ class Conductor:
 			except ValueError:
 				logger.error (f'cannot parse {l}')
 
-		logger.debug (f'{connid}: {path} {method} got headers {headers}')
+		logger.debug (f'{connid}: {rawPath} {method} got headers {headers}')
 
 		route = None
 		try:
 			host = headers['host']
+			if ':' in host:
+				host, port = host.split (':', 1)
+			else:
+				port = '80'
+			reqUrl = reqUrl.set (scheme='http', host=host, port=int(port))
+			logger.debug (f'got request url {reqUrl}')
 			routeKey = None
 			for d in self.domain:
 				m = parse (d, host)
@@ -104,17 +111,22 @@ class Conductor:
 			# error is written to client later
 
 		# is this a non-forwarded request?
-		if path[1] == b'_conductor':
-			if path[2] == b'auth':
+		segments = reqUrl.path.segments
+		if segments[0] == '_conductor':
+			if segments[1] == 'auth':
 				logger.info (f'authorization request for {host}')
+				try:
+					nextLoc = reqUrl.query.params['next'].encode ('utf-8')
+				except KeyError:
+					nextLoc = b'/'
 				writer.write (b'\r\n'.join ([
 						b'HTTP/1.0 302 Found',
-						b'Location: /',
-						b'Set-Cookie: authorization=' + path[3] + b'; HttpOnly; Path=/',
+						b'Location: ' + nextLoc,
+						b'Set-Cookie: authorization=' + segments[2].encode ('utf-8') + b'; HttpOnly; Path=/',
 						b'Cache-Control: no-store',
 						b'',
 						b'Follow the white rabbit.']))
-			elif path[2] == b'status':
+			elif segments[1] == 'status':
 				writer.write (b'HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n')
 				self.status['routesTotal'] = len (self.routes)
 				writer.write (json.dumps (self.status, ensure_ascii=True).encode ('ascii'))
@@ -176,7 +188,7 @@ class Conductor:
 			headers['Connection'] = 'close'
 
 		# write http banner plus headers
-		sockwriter.write (method + b' ' + b'/'.join (path) + b' ' + proto + b'\r\n')
+		sockwriter.write (method + b' ' + rawPath + b' ' + proto + b'\r\n')
 		for k, v in headers.items ():
 			sockwriter.write (f'{k}: {v}\r\n'.encode ('utf-8'))
 		sockwriter.write (b'\r\n')
