@@ -147,6 +147,10 @@ class Client ():
 					break
 				except Exception as e:
 					logger.debug (f'local socket {self.localsocket} not avaiable yet ({e}), waiting')
+					if commandproc.returncode is not None:
+						writeJson (dict (state='failed', reason=config.get ('reason', 'subprocess terminated')))
+						pipeproc.terminate()
+						return ExitCode.ERROR
 					await asyncio.sleep (0.5)
 
 			try:
