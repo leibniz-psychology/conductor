@@ -104,6 +104,7 @@ class Client ():
 		writeJson (dict (state='connect', user=self.user, host=self.host, port=self.port))
 		# remove null arguments
 		connectArgs = dict (filter (lambda x: x[1], [('host', self.host), ('port', self.port), ('username', self.user)]))
+		connectArgs['options'] = asyncssh.SSHClientConnectionOptions (known_hosts='/etc/ssh/ssh_known_hosts')
 		async with asyncssh.connect (**connectArgs) as conn:
 			commandproc = await asyncio.create_subprocess_exec (self.command[0],
 					*self.command[1:], start_new_session=True,
