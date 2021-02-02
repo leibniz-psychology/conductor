@@ -15,8 +15,8 @@ digraph G {
 				fillcolor=1
 				shape=record
 			]
+			nginx [label="nginx"];
 			conductorserver [label="conductor-server"];
-			conductorpipe [label="conductor-pipe"];
 			sshd [label="sshd"];
 		}
 		{
@@ -24,8 +24,9 @@ digraph G {
 				fillcolor=2
 				shape=record
 			]
-			forest [label="forest"];
-			remotesocket [label="socket"];
+			serversocket [label="Conductor server HTTP proxy socket"];
+			remotesocket [label="Remote application socket"];
+			clientsocket [label="Conductor server client socket"];
 		}
 
 		label="frontend";
@@ -46,7 +47,7 @@ digraph G {
 				fillcolor=2
 				shape=record
 			]
-			localsocket [label="socket"];
+			localsocket [label="Application socket"];
 		}
 
 		label="compute";
@@ -54,20 +55,28 @@ digraph G {
 
 	user [label="User"];
 
+	/* http request flow */
 	{
 		edge [ color=2 ];
-		conductorclient -> sshd [label="connect"];
-		app -> localsocket [label="listen", color=2];
-		conductorclient -> localsocket [label="forward"];
-		conductorserver -> remotesocket [label="forward"];
-		sshd -> remotesocket [label="listen"];
-		user -> conductorserver [label="access app.user.example.com"];
+		user -> nginx [label="access app.user.example.com"];
+		nginx -> serversocket [label="connect"];
+		serversocket -> conductorserver;
+		conductorserver -> remotesocket [label="connect"];
+		remotesocket -> sshd;
+		sshd -> conductorclient;
+		conductorclient -> localsocket [label="connect"];
+		localsocket -> app;
 	}
-	conductorclient -> app [label="run"];
-	conductorserver -> forest [label="watch"];
-	sshd -> conductorpipe [label="run"];
-	conductorpipe -> forest [label="write config"];
-	user -> conductorclient [label="run", style=dotted];
-	//remotesocket -> localsocket [label="forward"];
+	/* setup flow */
+	{
+		edge [ color=1 ];
+		user -> conductorclient [label="run"];
+		conductorclient -> app [label="run"];
+		app -> localsocket [label="listen"];
+		conductorclient -> sshd [label="connect"];
+		sshd -> clientsocket [label="connect"];
+		sshd -> remotesocket [label="listen"];
+		clientsocket -> conductorserver;
+	}
 }
 

@@ -12,7 +12,6 @@ setup(
     long_description_content_type='text/x-rst',
     install_requires=[
 		'asyncssh',
-		'aionotify',
 		'multidict',
 		'furl',
 		'parse',
@@ -22,7 +21,6 @@ setup(
     'console_scripts': [
             'conductor-server = conductor.server:main',
             'conductor = conductor.client:main',
-            'conductor-pipe = conductor.client:pipe',
             ],
     },
     classifiers = [

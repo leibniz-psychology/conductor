@@ -18,20 +18,22 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import asyncio, socket, os, struct, stat, json, logging, argparse, functools, traceback, time
+import asyncio, socket, os, struct, stat, json, logging, argparse, functools, \
+		traceback, time, tempfile, pwd
 from http.cookies import BaseCookie
 from collections import namedtuple
 from hashlib import blake2b
 from furl import furl
 
-import aionotify
 from multidict import CIMultiDict
 from parse import parse
 
-from .nss import getUser
 from .util import proxy
 
 logger = logging.getLogger (__name__)
+
+class BadRequest (Exception):
+	pass
 
 def handleException (func):
 	""" XXX: Should probably use some http library here? """
@@ -40,10 +42,15 @@ def handleException (func):
 		 # Some fancy foo stuff
 		try:
 			return await func(*args)
+		except BadRequest as e:
+			self, reader, writer = args
+			logger.error (f'Bad request: {e}')
+			writer.write (b'HTTP/1.0 400 Bad Request\r\n\r\n')
+			writer.close ()
 		except Exception as e:
 			self, reader, writer = args
 			traceback.print_exc()
-			logger.error (f'exception {e.args}')
+			logger.error (f'uncaught exception {e.args}')
 			writer.write (b'HTTP/1.0 500 Server Error\r\n\r\n')
 			writer.close ()
 	return wrapped
@@ -73,7 +80,13 @@ class Conductor:
 		try:
 			await self.handleRequest (reader, writer)
 		finally:
+			writer.close ()
+			await writer.wait_closed ()
 			self.status['requestActive'] -= 1
+
+	@staticmethod
+	def hashKey (v):
+		return blake2b (v.encode ('utf-8')).hexdigest ()
 
 	@handleException
 	async def handleRequest (self, reader, writer):
@@ -82,10 +95,14 @@ class Conductor:
 		self.nextConnId += 1
 
 		logger.debug (f'{connid}: new incoming connection')
-		# simple HTTP parsing
-		l = (await reader.readline ()).rstrip (b'\r\n')
+		# simple HTTP parsing, yes this is a terrible idea.
+		l = await reader.readline ()
+		if l == bytes ():
+			raise BadRequest (f'{connid}: unexpected eof')
+		l = l.rstrip (b'\r\n')
 		try:
 			method, rawPath, proto = l.split (b' ')
+			logger.debug (f'{connid}: got {method} {rawPath} {proto}')
 		except ValueError:
 			logger.error (f'{connid}: cannot split line {l}')
 			raise
@@ -94,11 +111,15 @@ class Conductor:
 		headers = CIMultiDict ()
 		while True:
 			if len (headers) > 100:
-				raise Exception ('too many headers')
+				raise BadRequest ('too many headers')
 
-			l = (await reader.readline ()).rstrip (b'\r\n')
+			l = await reader.readline ()
+			if l == bytes ():
+				raise BadRequest (f'{connid}: unexpected eof in headers')
+			l = l.rstrip (b'\r\n')
+			logger.debug (f'{connid}: got header line {l!r}')
 			# end of headers?
-			if l == b'\r\n' or not l:
+			if l == bytes ():
 				break
 			try:
 				key, value = l.decode ('utf-8').split (':', 1)
@@ -110,31 +131,27 @@ class Conductor:
 
 		route = None
 		try:
-			host = headers['host']
-			if ':' in host:
-				host, port = host.split (':', 1)
-			else:
-				port = '80'
-			reqUrl = reqUrl.set (scheme='http', host=host, port=int(port))
+			netloc = headers['host']
+			reqUrl = reqUrl.set (scheme='http', netloc=netloc)
 			logger.debug (f'got request url {reqUrl}')
 			routeKey = None
 			for d in self.domain:
-				m = parse (d, host)
+				m = parse (d, reqUrl.netloc)
 				if m is not None:
 					routeKey = RouteKey (key=m['key'], user=m['user'])
 					logger.debug (f'{connid}: got route key {routeKey}')
 					break
 			route = self.routes[routeKey]
 		except (KeyError, ValueError):
-			logger.info (f'{connid}: cannot find route for host {host} match {m} domain {self.domain}')
+			logger.info (f'{connid}: cannot find route for {reqUrl}')
 			self.status['noroute'] += 1
 			# error is written to client later
 
 		# is this a non-forwarded request?
 		segments = reqUrl.path.segments
-		if segments[0] == '_conductor':
+		if len (segments) > 0 and segments[0] == '_conductor':
 			if segments[1] == 'auth':
-				logger.info (f'authorization request for {host}')
+				logger.info (f'authorization request for {reqUrl.netloc}')
 				try:
 					nextLoc = reqUrl.query.params['next'].encode ('utf-8')
 				except KeyError:
@@ -156,7 +173,7 @@ class Conductor:
 			return
 
 		if not route:
-			writer.write (b'HTTP/1.0 404 Not Found\r\n\r\n')
+			writer.write (b'HTTP/1.0 404 Not Found\r\nConnection: close\r\n\r\n')
 			writer.close ()
 			return
 
@@ -170,7 +187,7 @@ class Conductor:
 		authorized = False
 		for c in cookies.values ():
 			# Only hashed authorization is available to server.
-			if c.key == 'authorization' and blake2b (c.value.encode ('utf-8')).hexdigest () == route.auth:
+			if c.key == 'authorization' and self.hashKey (c.value) == route.auth:
 				authorized = True
 				break
 		try:
@@ -182,8 +199,8 @@ class Conductor:
 			pass
 
 		if not authorized:
-			logger.info (f'{connid}: not authorized, cookies sent {cookies.values()}')
-			writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\n\r\nUnauthorized')
+			logger.info (f'{connid}-{reqUrl}: not authorized, cookies sent {cookies.values()}')
+			writer.write (b'HTTP/1.0 403 Unauthorized\r\nContent-Type: plain/text\r\nConnection: close\r\n\r\nUnauthorized')
 			writer.close ()
 			self.status['unauthorized'] += 1
 			return
@@ -195,8 +212,8 @@ class Conductor:
 			end = time.time ()
 			logger.debug (f'opening socket took {end-start}s')
 		except (ConnectionRefusedError, FileNotFoundError, PermissionError):
-			logger.info (f'{connid}: route {routeKey} is broken')
-			writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
+			logger.info (f'{connid}-{reqUrl}: route {routeKey} is broken')
+			writer.write (b'HTTP/1.0 502 Bad Gateway\r\nConnection: close\r\n\r\n')
 			writer.close ()
 			self.status['broken'] += 1
 			return
@@ -216,8 +233,8 @@ class Conductor:
 		async def beforeABClose (result):
 			if result == 0:
 				# no response received from client
-				logger.info (f'{connid}: route {routeKey} got no result from server')
-				writer.write (b'HTTP/1.0 502 Bad Gateway\r\n\r\n')
+				logger.info (f'{connid}-{reqUrl}: route {routeKey} got no result from server')
+				writer.write (b'HTTP/1.0 502 Bad Gateway\r\nConnection: close\r\n\r\n')
 
 		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'web'), logger=logger, logPrefix=connid, beforeABClose=beforeABClose)
 
@@ -241,137 +258,126 @@ class Conductor:
 		route = self.routes.pop (key)
 		logger.info (f'removed route {route.key} → {route.socket}')
 
-class Forest:
-	__slots__ = ('path', 'proxy', 'pathToRoute')
+class ClientInterface:
+	__slots__ = ('runtimeDir', 'socketsDir', 'proxy')
 
-	def __init__ (self, path, proxy):
-		self.path = os.path.realpath (path)
+	def __init__ (self, runtimeDir, proxy):
+		self.runtimeDir = runtimeDir
+		self.socketsDir = None
 		self.proxy = proxy
-		self.pathToRoute = dict ()
 
-		self._forestPermissionCheck ()
+	@staticmethod
+	async def _validateSocket (path, uid):
+		# it is safe to stat and then connect (no race connection;
+		# otherwise we’d have to connect and then fstat), because
+		# the sticky bit is set on the parent directory and no-one
+		# else can unlink the socket.
+		sstat = os.stat (path, follow_symlinks=False)
+		permissions = stat.S_IMODE (sstat.st_mode)
+		# neither world-read nor writeable
+		if permissions & 0o6:
+			raise Exception (f'{path} world-read- or -writeable')
+		# same owner
+		if uid != sstat.st_uid:
+			raise Exception (f'{path} socket owner does not match')
+		if not stat.S_ISSOCK (sstat.st_mode):
+			raise Exception (f'{path} not a socket')
+		# check socket is connect()’able
+		await asyncio.open_unix_connection (path=path)
 
-	def _forestPermissionCheck (self):
-		# make sure the forest dir has appropriate permissions
-		fstat = os.stat (self.path, follow_symlinks=False)
-		permissions = stat.S_IMODE (fstat.st_mode)
-		expect = 0o3713
-		if permissions != expect:
-			logger.error (f'Permissions on forest directory {self.path} are not correct. Is 0{permissions:o} should be 0{expect:o}')
-			raise Exception ()
-
-	async def addConfig (self, f):
-		"""
-		Add file f relative to forest path to proxy configuration
-		"""
-
-		configFile = os.path.join (self.path, f)
-		if not configFile.endswith ('.json'):
-			# skip files that are not configs
-			logger.error (f'{configFile} does not end with .json')
-			return
-
+	async def _handleLine (self, reader, writer, uid, username, socketDir, routes):
+		response = dict (status='error')
 		try:
-			cstat = os.stat (configFile, follow_symlinks=False)
-			# don’t read if it is world-readable -> leaked credentials
-			permissions = stat.S_IMODE (cstat.st_mode)
-			if not stat.S_ISREG (cstat.st_mode):
-				raise Exception (f'{configFile} not a regular file')
-			if permissions & 0o4:
-				raise Exception (f'{configFile} world-readable, ignoring')
+			l = await reader.readline ()
+			if not l:
+				return False
+			config = json.loads (l)
+			logger.debug (f'got config {config} from {username}')
 
-			with open (configFile) as fd:
-				o = json.load (fd)
+			# make sure noone else can write to that dir if we received
+			# the config, client should be listening on the socket by
+			# now.
+			os.chmod (socketDir, 0o770)
 
-			# socket checks:
-			socketPath = os.path.realpath (os.path.join (self.path, o['socket']))
-			if not os.path.dirname (socketPath).startswith (self.path):
-				raise Exception (f'{socketPath} not in forest dir {self.path}')
-			sstat = os.stat (socketPath, follow_symlinks=False)
-			permissions = stat.S_IMODE (sstat.st_mode)
-			# neither world-read nor writeable
-			if permissions & 0o6:
-				raise Exception (f'{socketPath} world-read- or -writeable')
-			# same owner
-			if cstat.st_uid != sstat.st_uid:
-				raise Exception (f'{socketPath} socket owner does not match')
-			if not stat.S_ISSOCK (sstat.st_mode):
-				raise Exception (f'{socketPath} not a socket')
+			socketPath = os.path.join (socketDir, 'socket')
+			await self._validateSocket (socketPath, uid)
 
-			user = getUser (cstat.st_uid)
-			key = RouteKey (key=str (o.get ('key')), user=user['name'])
-			route = Route (socket=socketPath, key=key, auth=o['auth'])
+			key = RouteKey (key=str (config.get ('key')).lower(), user=username.lower())
+			route = Route (socket=socketPath, key=key, auth=config['auth'])
 
 			self.proxy.addRoute (route)
-			self.pathToRoute[f] = route
-
-			o.update (dict (urls=[d.format (key=key.key, user=key.user) for d in self.proxy.domain]))
-			logger.debug (f'updating config at {configFile}: {o}')
-			# /proc/sys/fs/protected_regular > 0 prevents using
-			# > with open (configFile, 'w') as fd:
-			# because it contains O_CREAT, so we have to do it manually
-			with os.fdopen (os.open (configFile, os.O_TRUNC|os.O_WRONLY), 'w') as fd:
-				json.dump (o, fd)
-				fd.write ('\n')
+			routes.append (route)
 		except Exception as e:
-			logger.error (f'addConfig for {f} failed: {e}')
+			response = dict (status='error', reason=e.args[0])
+			return False
+		else:
+			response = dict (status='ok',
+					urls=[d.format (key=key.key, user=key.user) for d in self.proxy.domain])
+			return True
+		finally:
+			writer.write (json.dumps (response).encode ('utf-8'))
+			writer.write (b'\n')
 			try:
-				with os.fdopen (os.open (configFile, os.O_TRUNC|os.O_WRONLY), 'w') as fd:
-					json.dump (dict (status='error', reason=e.args[0]), fd)
-					fd.write ('\n')
-			except PermissionError:
-				# can’t write error, sorry
-				logger.error (f'not allowed to write error to config {configFile} ')
+				await writer.drain ()
+			except ConnectionResetError:
+				pass
 
-	async def removeConfig (self, f):
-		try:
-			r = self.pathToRoute.pop (f)
-			self.proxy.deleteRoute (r.key)
-		except KeyError:
-			pass
+	async def _accept (self, reader, writer):
+		sock = writer.get_extra_info ('socket')
+		creds = sock.getsockopt (socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize('3i'))
+		pid, uid, gid = struct.unpack('3i',creds)
+		remoteUser = pwd.getpwuid (uid)
+		username = remoteUser.pw_name
+		routes = []
+
+		with tempfile.TemporaryDirectory (prefix=f'{username}-', dir=self.socketsDir) as socketDir:
+			os.chmod (socketDir, stat.S_ISGID | stat.S_ISVTX | 0o777)
+			banner = dict (directory=socketDir, status='ok')
+			logger.debug (f'Writing banner {banner}')
+			writer.write (json.dumps (banner).encode ('utf-8'))
+			writer.write (b'\n')
+			await writer.drain ()
+
+			await self._handleLine (reader, writer, uid, username, socketDir, routes)
+			await reader.readline ()
+
+			for r in routes:
+				logger.debug (f'Removing route {r}')
+				self.proxy.deleteRoute (r.key)
+			writer.close ()
+			try:
+				await writer.wait_closed ()
+			except BrokenPipeError:
+				pass
 
 	async def run (self):
-		"""
-		Start directory watcher worker
-		"""
+		self.socketsDir = os.path.join (self.runtimeDir, 'sockets')
+		if not os.path.isdir (self.socketsDir):
+			# make sure clients can access (x) the directory, but not list it
+			os.makedirs (self.socketsDir, mode=0o771)
+		os.chmod (self.socketsDir, 0o771)
 
-		# add existing files
-		logger.info (f'reading existing configs in {self.path}')
-		for f in os.listdir (self.path):
-			await self.addConfig (f)
+		listenPath = os.path.join (self.runtimeDir, 'client')
+		async with await asyncio.start_unix_server (self._accept, listenPath) as server:
+			# everyone can write
+			os.chmod (listenPath, 0o777)
+			await server.serve_forever ()
 
-		logger.info ('starting watcher')
-		watcher = aionotify.Watcher()
-		watcher.watch (path=self.path,
-				flags=aionotify.Flags.MOVED_TO|aionotify.Flags.DELETE)
-
-		await watcher.setup(asyncio.get_event_loop ())
-		while True:
-			event = await watcher.get_event()
-			if event.flags == aionotify.Flags.MOVED_TO:
-				await self.addConfig (event.name)
-			elif event.flags == aionotify.Flags.DELETE:
-				await self.removeConfig (event.name)
-			else:
-				assert False
-		watcher.close ()
-
-def main ():
+def main (): # pragma: nocover
 	parser = argparse.ArgumentParser(description='conductor server part')
 	parser.add_argument ('-p', '--port', default=8888, type=int,
 		metavar='PORT', help='Listen port')
 	parser.add_argument ('-s', '--sock', default=None, metavar='PATH',
 		help='Listen port')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
-	parser.add_argument ('domain', nargs='+', metavar='DOMAIN', help='Domain match pattern')
-	parser.add_argument ('forest', default='forest', metavar='PATH',
-		help='Local forest path')
+	parser.add_argument ('-r', '--runtime-dir', dest='runtimeDir', default='/var/run/conductor', help='Runtime data directory')
+	parser.add_argument ('-d', '--domain', default=[], action='append', metavar='DOMAIN', help='Domain match pattern')
 
 	args = parser.parse_args()
 	if args.verbose:
 		logging.basicConfig (level=logging.DEBUG)
 	else:
-		logging.basicConfig (level=logging.WARN)
+		logging.basicConfig (level=logging.INFO)
 
 	if args.sock:
 		sock = socket.socket (socket.AF_UNIX)
@@ -387,6 +393,6 @@ def main ():
 	loop = asyncio.get_event_loop ()
 	proxy = Conductor (args.domain)
 	loop.create_task (proxy.run (port, sock))
-	forest = Forest (args.forest, proxy)
-	loop.run_until_complete (forest.run ())
+	client = ClientInterface (os.path.abspath (args.runtimeDir), proxy)
+	loop.run_until_complete (client.run ())
 

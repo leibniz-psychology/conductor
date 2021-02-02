@@ -2,11 +2,12 @@
 Description=SSH-based forwarding
 
 [Service]
-ExecStart=/var/guix/profiles/per-user/root/guix-profile/bin/conductor-server '{key}-{user}.user.example.com' /var/forest
+ExecStart=/var/guix/profiles/per-user/root/guix-profile/bin/conductor-server -r $RUNTIME_DIRECTORY -d '{key}-{user}.user.example.com'
 StandardOutput=syslog
 StandardError=syslog
 User=conductor
 Group=conductor
+RuntimeDirectory=conductor/
 
 [Install]
 WantedBy=multi-user.target

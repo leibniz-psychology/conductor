@@ -18,13 +18,12 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import asyncio, logging, argparse, sys, json, os, signal, secrets, getpass, subprocess
-from functools import partial
-from tempfile import NamedTemporaryFile
+import asyncio, logging, argparse, sys, json, os, signal, secrets, subprocess, traceback
 from enum import unique, IntEnum
 from hashlib import blake2b
 
-import asyncssh, aionotify
+import asyncssh
+from furl import furl
 
 from .util import proxy, socketListener
 
@@ -54,14 +53,9 @@ class Client ():
 	socket. Writes config file to pipe client.
 	"""
 
-	def __init__ (self, forestpath, pipeCmd, localsocket, user, host, port, command,
-			token, replace=False, key=None):
-		self.user = user
-		self.host = host
-		self.port = port
-		self.forestpath = os.path.realpath (forestpath)
-		self.pipeCmd = pipeCmd
-		self.localsocket = localsocket
+	def __init__ (self, localSocket, controlUrl, command, token, replace=False, key=None):
+		self.controlUrl = controlUrl
+		self.localSocket = localSocket
 		self.command = command
 		self.token = token
 		self.replace = replace
@@ -69,7 +63,7 @@ class Client ():
 		self.nextConnId = 0
 
 	def connectLocal (self):
-		return asyncio.open_unix_connection (path=self.localsocket)
+		return asyncio.open_unix_connection (path=self.localSocket)
 
 	async def handler (self, reader, writer):
 		connid = self.nextConnId
@@ -79,7 +73,7 @@ class Client ():
 		try:
 			sockreader, sockwriter = await self.connectLocal ()
 		except Exception as e:
-			logger.error (f'{connid}: local socket {self.localsocket} not avaiable, {e}')
+			logger.error (f'{connid}: local socket {self.localSocket} not avaiable, {e}')
 			writer.close ()
 			return
 
@@ -103,149 +97,213 @@ class Client ():
 				logger.debug (f'removing stale socket {path}')
 				os.unlink (path)
 
-	async def run (self):
-		async def wrapFd (fd, kind):
-			""" Wrap data from fd into json messages """
-			while True:
-				buf = await fd.read (4*1024)
-				if not buf:
-					break
-				writeJson (dict (
-						state='data',
-						kind=kind,
-						data=buf.decode ('utf-8', errors='replace'),
-						))
-
-		try:
-			self.checkSocketExists (self.localsocket, self.replace)
-		except FileExistsError:
-			return ExitCode.SOCKET_USED
-
-		writeJson (dict (state='connect', user=self.user, host=self.host, port=self.port))
+	def connect (self):
+		""" Connect to control SSH server """
+		controlUrl = self.controlUrl
 		# remove null arguments
-		connectArgs = dict (filter (lambda x: x[1], [('host', self.host), ('port', self.port), ('username', self.user)]))
-		connectArgs['options'] = asyncssh.SSHClientConnectionOptions (known_hosts='/etc/ssh/ssh_known_hosts')
-		async with asyncssh.connect (**connectArgs) as conn:
-			commandproc = await asyncio.create_subprocess_exec (self.command[0],
-					*self.command[1:], start_new_session=True,
-					stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-			stdoutTask = asyncio.create_task (wrapFd (commandproc.stdout, 'stdout'))
-			stderrTask = asyncio.create_task (wrapFd (commandproc.stderr, 'stderr'))
-			writeJson (dict (state='execute', command=self.command, pid=commandproc.pid))
+		connectArgs = dict (filter (lambda x: x[1], [('host', controlUrl.host), ('port', controlUrl.port), ('username', controlUrl.username)]))
+		knownHostsFile = '/etc/ssh/ssh_known_hosts'
+		if os.path.exists (knownHostsFile):
+			connectArgs['options'] = asyncssh.SSHClientConnectionOptions (known_hosts=knownHostsFile)
+		return asyncssh.connect (**connectArgs)
 
-			pipeproc = await conn.create_process (f'{self.pipeCmd} {self.forestpath}')
-			writeJson (dict (state='pipe', pipeCmd=self.pipeCmd, forestPath=self.forestpath))
+	async def runControl (self, programReady):
+		""" Connection to conductor-server """
+
+		async def openReaderWriter ():
+			while True:
+				try:
+					logger.debug (f'trying to open {controlUrl.path}')
+					return await conn.open_unix_connection (str (controlUrl.path),
+							encoding='utf-8')
+				except asyncssh.misc.ChannelOpenError:
+					await asyncio.sleep (0.1)
+
+		connectTotalTimeout = 3
+		controlUrl = self.controlUrl
+		async with self.connect () as conn:
+			writeJson (dict (state='connect', user=controlUrl.username,
+					host=controlUrl.host, port=controlUrl.port))
 
 			tries = 0
-			while True:
-				sockName = getpass.getuser() + '-' + randomSecret (16) + '.socket'
-				sockpath = os.path.join (self.forestpath, sockName)
-				writeJson (dict (state='socket', socketPath=sockpath))
-				try:
-					listener = await conn.start_unix_server (self.accept,
-							listen_path=sockpath)
-					break
-				except asyncssh.misc.ChannelListenError:
-					# generate a different name
-					logger.debug ('failed starting unix server, try {tries}')
-					tries += 1
-					if tries > 5:
-						logger.error (f'cannot create a socket on remote forest {self.forestpath}, check permissions')
-						return ExitCode.ERROR
+			while tries < 5:
+				tries += 1
 
-			config = {'socket': sockName, 'auth': self.token}
-			if self.key:
-				config['key'] = self.key
-			writeJson (dict (state='config', config=config))
-			config['auth'] = blake2b (self.token.encode ('utf-8')).hexdigest ()
-			pipeproc.stdin.write (json.dumps (config) + '\n')
+				try:
+					controlReader, controlWriter = await asyncio.wait_for (
+							openReaderWriter (), timeout=connectTotalTimeout)
+				except asyncio.TimeoutError:
+					logger.error (f'Cannot connect to {controlUrl.path}')
+					# fatal error
+					return False
+				# if the initial connection succeeded we can wait longer for it.
+				connectTotalTimeout = 60
+
+				l = await controlReader.readline ()
+				banner = json.loads (l)
+				writeJson (dict (state='controlConnect', path=str (controlUrl.path), banner=banner))
+
+				try:
+					remoteSocketPath = os.path.join (banner['directory'], 'socket')
+					listener = await conn.start_unix_server (self.accept,
+							listen_path=remoteSocketPath)
+				except asyncssh.misc.ChannelListenError as e:
+					logger.error (f'Cannot listen on socket {remoteSocketPath}: {e}')
+					# this is a hard error
+					return False
+
+				# fix permissions on the socket, so server can read/write
+				chmodProc = await conn.create_process (f'chmod 660 {remoteSocketPath}')
+				await chmodProc.wait ()
+
+				await programReady.wait ()
+
+				config = {'auth': self.token}
+				if self.key:
+					config['key'] = self.key
+				config['auth'] = blake2b (self.token.encode ('utf-8')).hexdigest ()
+				controlWriter.write (json.dumps (config) + '\n')
+				await controlWriter.drain ()
+
+				l = await controlReader.readline ()
+				resp = json.loads (l)
+				if resp.get ('status') != 'ok':
+					writeJson (dict (state='failed', reason=resp['status']))
+					return ExitCode.ERROR
+				writeJson (dict (state='live', config=dict (auth=self.token, key=self.key, urls=resp['urls'])))
+
+				# reset tries
+				tries = 0
+				while True:
+					l = await controlReader.readline ()
+					if not l:
+						break
+				writeJson (dict (state='dead'))
+
+	@staticmethod
+	async def wrapFd (fd, kind):
+		""" Wrap data from fd into json messages """
+		while True:
+			buf = await fd.read (4*1024)
+			if not buf:
+				break
+			writeJson (dict (
+					state='data',
+					kind=kind,
+					data=buf.decode ('utf-8', errors='replace'),
+					))
+
+	async def runProgram (self, programReady):
+		""" Run the client program """
+
+		logger.debug (f'starting program {self.command}')
+		commandproc = await asyncio.create_subprocess_exec (self.command[0],
+				*self.command[1:], start_new_session=True,
+				stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		try:
+			stdoutTask = asyncio.create_task (self.wrapFd (commandproc.stdout, 'stdout'))
+			stderrTask = asyncio.create_task (self.wrapFd (commandproc.stderr, 'stderr'))
+			writeJson (dict (state='execute', command=self.command, pid=commandproc.pid))
 
 			# wait for the application to become live, i.e. socket exists and server responds
 			while True:
 				try:
 					await self.connectLocal ()
-					logger.debug (f'local socket {self.localsocket} is available, moving on')
+					logger.debug (f'local socket {self.localSocket} is available, moving on')
 					break
 				except Exception as e:
-					logger.debug (f'local socket {self.localsocket} not avaiable yet ({e}), waiting')
+					logger.debug (f'local socket {self.localSocket} not avaiable yet ({e}), waiting')
 					if commandproc.returncode is not None:
-						writeJson (dict (state='failed', reason=config.get ('reason', 'subprocess terminated')))
-						pipeproc.terminate()
+						writeJson (dict (state='failed', reason='subprocess terminated'))
 						return ExitCode.ERROR
-					await asyncio.sleep (0.5)
+					await asyncio.sleep (0.1)
+			
+			programReady.set ()
 
-			try:
-				buf = await pipeproc.stdout.readline ()
-				config = json.loads (buf)
-				# check server response
-				status = config.get ('status', 'ok')
-				if status == 'error':
-					writeJson (dict (state='failed', reason=config.get ('reason', 'No reason given')))
-					return ExitCode.ERROR
-				# Server only knows the hashed token, but client should get the unhashed value.
-				config['auth'] = self.token
+			return await commandproc.wait ()
+		except asyncio.CancelledError:
+			logger.debug ('cancelled runProgram')
+		except Exception:
+			raise
+		finally:
+			ret = commandproc.returncode
+			if ret is None:
+				logger.debug ('terminating command')
+				# We’re starting commandproc above with
+				# start_new_session=True, which means it will be leader of
+				# a new process group with its PID. Kill the whole process
+				# group in case the started process does not forward
+				# signals to its children.
+				os.killpg (commandproc.pid, signal.SIGTERM)
+				try:
+					ret = await asyncio.wait_for(commandproc.wait (), timeout=3.0)
+				except asyncio.TimeoutError:
+					os.killpg (commandproc.pid, signal.SIGKILL)
+					ret = await commandproc.wait ()
+			writeJson (dict (state='exit', status=ret))
 
-				writeJson (dict (state='live', config=config))
-				done, pending = await asyncio.wait ([pipeproc.wait (), listener.wait_closed (),
-						commandproc.wait ()], return_when=asyncio.FIRST_COMPLETED)
-			except asyncio.CancelledError:
-				logger.debug (f'cancelled')
-			finally:
-				ret = commandproc.returncode
-				if ret is None:
-					logger.debug ('terminating command')
-					# We’re starting commandproc above with
-					# start_new_session=True, which means it will be leader of
-					# a new process group with its PID. Kill the whole process
-					# group in case the started process does not forward
-					# signals to its children.
-					os.killpg (commandproc.pid, signal.SIGTERM)
-					try:
-						ret = await asyncio.wait_for(commandproc.wait (), timeout=3.0)
-					except asyncio.TimeoutError:
-						os.killpg (commandproc.pid, signal.SIGKILL)
-						ret = await commandproc.wait ()
-				writeJson (dict (state='exit', status=ret))
+			for task in (stdoutTask, stderrTask):
+				task.cancel ()
+				try:
+					await task
+				except asyncio.CancelledError:
+					pass
 
-				# cleanup
-				pipeproc.terminate ()
-				ret = await pipeproc.wait ()
-				if ret.exit_status != 0:
-					writeJson (dict (
-							state='failed',
-							reason='pipe',
-							status=ret.exit_status,
-							stderr=await pipeproc.stderr.read (),
-							stdout=await pipeproc.stdout.read ()),
-							)
-					return ExitCode.ERROR
+	async def run (self):
+		try:
+			self.checkSocketExists (self.localSocket, self.replace)
+		except FileExistsError:
+			return ExitCode.SOCKET_USED
 
-				for task in (stdoutTask, stderrTask):
-					task.cancel ()
-					try:
-						await task
-					except asyncio.CancelledError:
-						pass
-		return ExitCode.OK
+		logger.debug ('Starting tasks')
+		programReady = asyncio.Event ()
+		runProgramTask = asyncio.ensure_future (self.runProgram (programReady))
+		runControlTask = asyncio.ensure_future (self.runControl (programReady))
 
-def parseSSHPath (s):
-	if '@' in s:
-		user, tail = s.split ('@', 1)
-	else:
-		user, tail = None, s
-	host, path = tail.split (':', 1)
-	return user, host, path
+		try:
+			logger.debug ('Waiting for tasks')
+			# We’re done if either of the tasks exits.
+			done, pending = await asyncio.wait (
+					[runProgramTask, runControlTask],
+					return_when=asyncio.FIRST_COMPLETED)
+			logger.debug (f'{done} is done, {pending} is pending')
+		except asyncio.CancelledError:
+			logger.debug (f'cancelled')
+			return ExitCode.OK
+		except Exception as e:
+			logger.error (f'failed with {e}')
+			return ExitCode.ERROR
+		else:
+			if runControlTask.done ():
+				# This is always an error
+				return ExitCode.ERROR
+			elif runProgramTask.done ():
+				# check return code
+				try:
+					ret = runProgramTask.result ()
+					if ret == 0:
+						return ExitCode.OK
+				except:
+					pass
+				return ExitCode.ERROR
+			else:
+				# not reached
+				assert False
+		finally:
+			logger.debug ('Cancelling remaining tasks')
+			runProgramTask.cancel ()
+			runControlTask.cancel ()
+			await runProgramTask
+			await runControlTask
 
-def main ():
+def main (): # pragma: nocover
 	parser = argparse.ArgumentParser(description='conductor client')
-	parser.add_argument ('-c', '--pipe', default='conductor-pipe', help='Remote pipe command')
-	parser.add_argument ('-p', '--port', type=int, default=22, help='SSH port')
 	parser.add_argument ('-r', '--replace', action='store_true', help='Replace existing process')
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('-k', '--key', default='', help='Subdomain')
-	parser.add_argument ('forest', type=parseSSHPath,
-			help='Remote forest path, i.e. user@host:/path')
-	parser.add_argument ('socket', help='Local socket to connect to')
+	parser.add_argument ('server', type=lambda x: furl ('unix://' + x),
+			help='Server to connect to. Supports URLs like user@host:port/path')
+	parser.add_argument ('localSocket', help='Local socket to connect to')
 	parser.add_argument ('command', nargs=argparse.REMAINDER, help='Command to run')
 
 	args = parser.parse_args()
@@ -262,9 +320,11 @@ def main ():
 		# generate a random one, if none supplied
 		token = randomSecret (32)
 
-	client = Client (args.forest[2], args.pipe, args.socket, args.forest[0],
-			args.forest[1], args.port,
-			args.command, token, replace=args.replace, key=args.key)
+	server = args.server
+	if not server.path:
+		server = server.set (path='/var/run/conductor/client')
+	client = Client (localSocket=args.localSocket, controlUrl=args.server,
+			command=args.command, token=token, replace=args.replace, key=args.key)
 
 	run = asyncio.ensure_future (client.run ())
 	loop = asyncio.get_event_loop ()
@@ -274,82 +334,8 @@ def main ():
 	try:
 		return loop.run_until_complete (run)
 	except asyncio.CancelledError:
-		pass
-
-async def pipeAsync (readfd, writefd, forest):
-	# make fd asyncio aware
-	reader = asyncio.StreamReader ()
-	loop = asyncio.get_event_loop ()
-	await loop.connect_read_pipe(lambda: asyncio.StreamReaderProtocol(reader), readfd)
-
-	# files removed when exiting
-	cleanupFiles = []
-
-	try:
-		l = await reader.readline ()
-
-		config = json.loads (l)
-
-		fd = NamedTemporaryFile (mode='w',
-				prefix=os.path.basename (config['socket']) + '-',
-				dir=forest,
-				delete=False)
-		json.dump (config, fd)
-		fd.close ()
-
-		# fix permissions on config and socket
-		os.chmod (fd.name, 0o660)
-		if 'socket' in config:
-			socketPath = os.path.join (forest, config['socket'])
-			if os.path.exists (socketPath):
-				os.chmod (socketPath, 0o660)
-				cleanupFiles.append (socketPath)
-
-		# rename to make server pick up the file
-		os.rename (fd.name, fd.name + '.json')
-		configPath = fd.name + '.json'
-		cleanupFiles.append (configPath)
-
-		# watch the file for server changes and write them to stdout
-		watcher = aionotify.Watcher()
-		watcher.watch (path=configPath, flags=aionotify.Flags.CLOSE_WRITE)
-
-		await watcher.setup (loop)
-		while True:
-			event = await watcher.get_event()
-			if event.flags == aionotify.Flags.CLOSE_WRITE:
-				with open (configPath, 'r') as fd:
-					writefd.write (fd.read ())
-					# pipes are not line-buffered, explicit flush required
-					writefd.flush ()
-			else:
-				assert False
-		watcher.close ()
-	except asyncio.CancelledError:
-		pass
-	finally:
-		for f in cleanupFiles:
-			try:
-				os.unlink (f)
-			except FileNotFoundError:
-				pass
-
-def pipe ():
-	parser = argparse.ArgumentParser(description='conductor pipe (do not use directly)')
-	parser.add_argument ('forest', help='Local forest path')
-
-	args = parser.parse_args()
-
-	run = asyncio.ensure_future (pipeAsync (sys.stdin, sys.stdout, args.forest))
-	loop = asyncio.get_event_loop ()
-
-	# connect signals
-	stop = lambda signum: run.cancel ()
-	for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGPIPE):
-		loop.add_signal_handler (sig, stop, sig)
-
-	try:
-		loop.run_until_complete (run)
-	except asyncio.CancelledError:
-		pass
+		return ExitCode.OK
+	except Exception as e:
+		traceback.print_exc (file=sys.stderr)
+		return ExitCode.ERROR
 
