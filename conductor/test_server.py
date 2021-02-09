@@ -171,7 +171,20 @@ async def test_conductor (conductor, simpleWebServer):
 			assert resp.status == 200
 			o = await resp.json ()
 			assert o['routesTotal'] == 0
+			assert o['requestTotal'] == 1
+			assert o['requestActive'] == 1
 			assert o['noroute'] == 1
+
+		# make sure that requests are properly counted and requestActive is decreased
+		reader, writer = await asyncio.open_unix_connection (path=serverSocketPath)
+		writer.write (b'invalid http request\n')
+		writer.close ()
+		await writer.wait_closed ()
+		async with session.get(f'http://{key}-{user}.conductor.local/_conductor/status') as resp:
+			assert resp.status == 200
+			o = await resp.json ()
+			assert o['requestTotal'] == 3
+			assert o['requestActive'] == 1
 
 		async with session.get(f'http://{key}-{user}.conductor.local/_conductor/nonexistent') as resp:
 			assert resp.status == 404

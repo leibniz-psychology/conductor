@@ -80,8 +80,12 @@ class Conductor:
 		try:
 			await self.handleRequest (reader, writer)
 		finally:
-			writer.close ()
-			await writer.wait_closed ()
+			try:
+				writer.close ()
+				await writer.wait_closed ()
+			except:
+				# ignore any errors while closing
+				pass
 			self.status['requestActive'] -= 1
 
 	@staticmethod
