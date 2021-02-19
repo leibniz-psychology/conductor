@@ -26,13 +26,15 @@ import platform, re, os, asyncio
 from collections import namedtuple
 
 async def copy (source, dest):
+	bufsize = 256*1024
 	copied = 0
 	while True:
-		buf = await source.read (4096)
+		buf = await source.read (bufsize)
 		if not buf:
 			break
 		foo = dest.write (buf)
 		assert foo is None
+		await dest.drain ()
 		copied += len (buf)
 	return copied
 

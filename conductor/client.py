@@ -183,8 +183,9 @@ class Client ():
 	@staticmethod
 	async def wrapFd (fd, kind):
 		""" Wrap data from fd into json messages """
+		bufsize = 256*1024
 		while True:
-			buf = await fd.read (4*1024)
+			buf = await fd.read (bufsize)
 			if not buf:
 				break
 			writeJson (dict (

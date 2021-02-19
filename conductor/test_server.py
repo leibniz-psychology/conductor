@@ -121,11 +121,15 @@ async def test_client_interface_ok (clientInterface):
 async def hello(request):
     return web.Response (text="Hello, world")
 
+async def largeResponse(request):
+	return web.Response (text='a'*(1024*1024))
+
 @pytest.fixture
 async def simpleWebServer ():
 	with TemporaryDirectory () as socketDir:
 		app = web.Application()
 		app.add_routes([web.get('/', hello)])
+		app.add_routes([web.get('/large', largeResponse)])
 		
 		socketPath = os.path.join (socketDir, 'socket')
 		runner = web.AppRunner(app)
@@ -210,6 +214,11 @@ async def test_conductor (conductor, simpleWebServer):
 		async with session.get(f'http://{key}-{user}.conductor.local/_conductor/auth/{auth}') as resp:
 			assert resp.status == 200
 			assert await resp.text() == 'Hello, world'
+
+		# make sure responses larger than any buffer work
+		async with session.get(f'http://{key}-{user}.conductor.local/large') as resp:
+			assert resp.status == 200
+			assert await resp.text() == 'a'*(1024*1024)
 
 		async with session.get(f'http://{key}-{user}.conductor.local/_conductor/auth/{auth}?next=/nonexistent') as resp:
 			assert resp.status == 404
