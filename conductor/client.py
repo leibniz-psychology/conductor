@@ -284,7 +284,7 @@ class Client ():
 					ret = runProgramTask.result ()
 					if ret == 0:
 						return ExitCode.OK
-				except:
+				except Exception as e:
 					pass
 				return ExitCode.ERROR
 			else:

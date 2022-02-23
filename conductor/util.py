@@ -84,7 +84,7 @@ async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None)
 		try:
 			c.result ()
 			d.result ()
-		except:
+		except Exception as e:
 			pass
 		logger.debug (f'{logPrefix}: bye bye')
 

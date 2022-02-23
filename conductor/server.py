@@ -83,7 +83,7 @@ class Conductor:
 			try:
 				writer.close ()
 				await writer.wait_closed ()
-			except:
+			except Exception as e:
 				# ignore any errors while closing
 				pass
 			self.status['requestActive'] -= 1
