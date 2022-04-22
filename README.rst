@@ -67,3 +67,72 @@ incoming to outgoing streams (and thus SSH handles multiplexing for us). Using
 a new non-guessable subdirectory with tight permissions for every new client
 should make this reasonably safe.
 
+Development
+-----------
+
+You can run both server and client locally for development and
+testing. Make sure you can ``ssh`` into ``localhost`` without interactive
+authorization (i.e. no password). To run the server:
+
+.. code-block:: bash
+
+	openssl req -new -newkey -x509 -days 365 -nodes -out cert.pem -keyout cert.key
+	openssl req -new -newkey -x509 -days 365 -nodes -out client.pem -keyout client.key
+	conductor-server \
+			-r run \
+			--ssl-cert-file cert.pem \
+			--ssl-key-file cert.key \
+			-d '{key}-{user}.localhost:8888' \
+			--ssl-allowed-clients client.pem \
+			-v
+
+Then run any client like this simple HTTP server:
+
+.. code:: python
+
+	import asyncio, sys, os
+
+	payload = b'a'*10000
+	async def cb (reader, writer):
+		print ('yep')
+		sys.stdout.flush ()
+		while True:
+			l = await reader.readline ()
+			if l == b'\r\n' or not l:
+				break
+			#print (l)
+		writer.write (b'HTTP/1.0 200 OK\r\nConnection: close\r\n\r\n')
+		writer.write (payload)
+		writer.close ()
+		try:
+			await writer.wait_closed ()
+		except:
+			pass
+
+	async def main ():
+		socketpath = sys.argv[1]
+		await asyncio.start_unix_server (cb, socketpath)
+		os.chmod (socketpath, 0o0600)
+
+	loop = asyncio.get_event_loop ()
+	loop.run_until_complete (main ())
+	loop.run_forever ()
+
+And execute it:
+
+.. code-block:: bash
+
+	env CONDUCTOR_TOKEN=test conductor \
+			-k server \
+			localhost`pwd`/run/client /tmp/server.sock -- \
+			python unixserver.py /tmp/server.sock
+
+You can access it with ``curl``:
+
+.. code-block:: bash
+
+	curl -b 'authorization=test' -L -D - \
+			-k  \
+			--cert client.pem --key client.key \
+			https://server-$USER.localhost:8888/
+

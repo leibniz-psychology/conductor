@@ -242,13 +242,13 @@ class Conductor:
 
 		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'web'), logger=logger, logPrefix=connid, beforeABClose=beforeABClose)
 
-	async def run (self, port=None, sock=None):
+	async def run (self, port=None, sock=None, sslctx=None):
 		"""
 		Start public proxy worker
 		"""
 
 		logger.info (f'starting server on port {port} for domains {self.domain}')
-		server = await asyncio.start_server (self._connectCb, port=port, sock=sock)
+		server = await asyncio.start_server (self._connectCb, port=port, sock=sock, ssl=sslctx)
 		await server.serve_forever ()
 
 	def addRoute (self, route):
@@ -376,6 +376,9 @@ def main (): # pragma: nocover
 	parser.add_argument ('-v', '--verbose', action='store_true', help='Verbose output')
 	parser.add_argument ('-r', '--runtime-dir', dest='runtimeDir', default='/var/run/conductor', help='Runtime data directory')
 	parser.add_argument ('-d', '--domain', default=[], action='append', metavar='DOMAIN', help='Domain match pattern')
+	parser.add_argument ('--ssl-cert-file', dest='sslCertFile', metavar='FILE', help='Public SSL certificate')
+	parser.add_argument ('--ssl-key-file', dest='sslKeyFile', metavar='FILE', help='Private SSL key')
+	parser.add_argument ('--ssl-allowed-clients', dest='sslAllowedClients', metavar='FILE', help='Authorized client certificates')
 
 	args = parser.parse_args()
 	if args.verbose:
@@ -394,9 +397,19 @@ def main (): # pragma: nocover
 		sock = None
 		port = args.port
 
+	if args.sslCertFile and args.sslKeyFile:
+		import ssl
+		sslctx = ssl.create_default_context (ssl.Purpose.CLIENT_AUTH)
+		if args.sslAllowedClients:
+			sslctx.verify_mode = ssl.CERT_REQUIRED
+			sslctx.load_verify_locations(cafile=args.sslAllowedClients)
+		sslctx.load_cert_chain (certfile=args.sslCertFile, keyfile=args.sslKeyFile)
+	else:
+		sslctx = None
+
 	loop = asyncio.get_event_loop ()
 	proxy = Conductor (args.domain)
-	loop.create_task (proxy.run (port, sock))
+	loop.create_task (proxy.run (port, sock, sslctx))
 	client = ClientInterface (os.path.abspath (args.runtimeDir), proxy)
 	loop.run_until_complete (client.run ())
 
