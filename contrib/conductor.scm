@@ -14,13 +14,17 @@
 
 (define %source-dir (dirname (dirname (current-filename))))
 
+;; Backport of https://github.com/ronf/asyncssh/issues/476 until new release.
+(define python-asyncssh-fixed
+  (package-with-patches python-asyncssh '("contrib/python-asyncssh-fix-gssapi.patch")))
+
 (package
   (name "conductor")
   (version "0.1")
   (source (local-file %source-dir #:recursive? #t))
   (build-system python-build-system)
   (propagated-inputs
-   `(("python-asyncssh" ,python-asyncssh)
+   `(("python-asyncssh" ,python-asyncssh-fixed)
      ("python-multidict" ,python-multidict)
      ("python-parse" ,python-parse)
      ("python-furl" ,python-furl)))
