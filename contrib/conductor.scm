@@ -20,16 +20,11 @@
   (source (local-file %source-dir #:recursive? #t))
   (build-system python-build-system)
   (propagated-inputs
-   `(("python-asyncssh" ,python-asyncssh)
-     ("python-multidict" ,python-multidict)
-     ("python-parse" ,python-parse)
-     ("python-furl" ,python-furl)
-     ("python-structlog" ,python-structlog)))
+    (list python-asyncssh python-multidict python-parse python-furl
+          python-structlog))
   (native-inputs
-   `(("python-pytest-asyncio" ,python-pytest-asyncio)
-     ("python-pytest" ,python-pytest)
-     ("python-pytest-cov" ,python-pytest-cov)
-     ("python-aiohttp" ,python-aiohttp)))
+    (list python-pytest-asyncio python-pytest python-pytest-cov
+          python-aiohttp))
   (home-page "https://github.com/leibniz-psychology/conductor")
   (synopsis #f)
   (description #f)
