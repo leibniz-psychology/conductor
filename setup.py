@@ -15,6 +15,7 @@ setup(
 		'multidict',
 		'furl',
 		'parse',
+		'structlog',
     ],
     python_requires='>=3.7',
     entry_points={

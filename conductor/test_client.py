@@ -19,15 +19,18 @@
 # SOFTWARE.
 
 import pytest
+import structlog
 
 from .client import Client
 from .test_util import socketServer
 
+logger = structlog.get_logger ()
+
 @pytest.mark.asyncio
 async def test_checkSocketExists_yes (socketServer):
 	with pytest.raises (FileExistsError):
-		Client.checkSocketExists (socketServer)
+		Client.checkSocketExists (socketServer, logger)
 
 def test_checkSocketExists_no ():
-	Client.checkSocketExists ('/nonexistent')
+	Client.checkSocketExists ('/nonexistent', logger)
 

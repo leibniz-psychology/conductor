@@ -23,7 +23,8 @@
    `(("python-asyncssh" ,python-asyncssh)
      ("python-multidict" ,python-multidict)
      ("python-parse" ,python-parse)
-     ("python-furl" ,python-furl)))
+     ("python-furl" ,python-furl)
+     ("python-structlog" ,python-structlog)))
   (native-inputs
    `(("python-pytest-asyncio" ,python-pytest-asyncio)
      ("python-pytest" ,python-pytest)

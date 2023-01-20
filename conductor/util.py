@@ -22,8 +22,9 @@
 Miscellaneous utility functions
 """
 
-import platform, re, os, asyncio
+import platform, re, os, asyncio, logging, sys
 from collections import namedtuple
+import structlog
 
 async def copy (source, dest):
 	bufsize = 256*1024
@@ -38,7 +39,7 @@ async def copy (source, dest):
 		copied += len (buf)
 	return copied
 
-async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None):
+async def proxy (endpointa, endpointb, logger, beforeABClose=None):
 	"""
 	Bi-directional proxying for tuple of (StreamReader, StreamWriter, str)
 	"""
@@ -53,27 +54,27 @@ async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None)
 		pending = [a, b]
 		while pending:
 			done, pending = await asyncio.wait (pending, return_when=asyncio.FIRST_COMPLETED)
-			logger.debug (f'{logPrefix}: done {done} pending {pending}')
+			logger.debug ('proxy_wait_returned', done=done, pending=pending)
 			if a in done:
 				if beforeABClose is not None:
 					await beforeABClose (a.result ())
-				logger.debug (f'{logPrefix}: copy {eaName}->{ebName} is done, closing')
+				logger.debug ('proxy_copy_done', source=eaName, destination=ebName)
 				ebWriter.close ()
 			if b in done:
-				logger.debug (f'{logPrefix}: copy {ebName}->{eaName} is done, closing')
+				logger.debug ('proxy_copy_done', source=ebName, destination=eaName)
 				eaWriter.close ()
 		# discard results
 		a.result ()
 		b.result ()
 	except BrokenPipeError:
-		logger.debug (f'{logPrefix}: broken pipe')
+		logger.debug ('proxy_broken_pipe')
 	except ConnectionResetError:
-		logger.debug (f'{logPrefix}: connection reset')
+		logger.debug ('proxy_connetion_reset')
 	except Exception as e:
-		logger.debug (f'{logPrefix}: unhandled exception {e}')
+		logger.debug ('proxy_exception', error=e)
 		traceback.print_exc()
 	finally:
-		logger.debug (f'{logPrefix}: finalizing')
+		logger.debug ('proxy_finally')
 		# make sure they are really closed
 		eaWriter.close ()
 		ebWriter.close ()
@@ -86,7 +87,7 @@ async def proxy (endpointa, endpointb, logger, logPrefix='', beforeABClose=None)
 			d.result ()
 		except Exception as e:
 			pass
-		logger.debug (f'{logPrefix}: bye bye')
+		logger.debug ('proxy_bye')
 
 SockInfo = namedtuple ('SockInfo', ['num', 'refCount', 'protocol', 'flags', 'type', 'st', 'inode', 'path'])
 
@@ -151,4 +152,36 @@ def socketListener (path):
 				if f == f'socket:[{inode}]':
 					ret.append (pid)
 	return ret
+
+class StructLogHandler (logging.Handler):
+	def __init__ (self, level=logging.NOTSET, logger=None):
+		super ().__init__ (level=level)
+		self.logger = logger
+
+	""" Forward messages from Python’s own logging module to structlog """
+	def emit (self, record):
+		lvl = record.levelname.lower ()
+		f = getattr (self.logger, lvl)
+		f ('logging.' + record.name, message=record.getMessage (), exc_info=record.exc_info)
+
+def configureStructlog (verbose):
+	level = logging.DEBUG if verbose else logging.INFO
+	structlog.configure (
+		wrapper_class=structlog.make_filtering_bound_logger(level),
+		processors=[
+			structlog.threadlocal.merge_threadlocal_context,
+			structlog.processors.add_log_level,
+			structlog.processors.format_exc_info,
+			structlog.processors.TimeStamper(fmt="iso", utc=False),
+			structlog.processors.JSONRenderer(),
+		],
+		logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+	)
+	logger = structlog.get_logger ()
+
+	# Forward Python logging to structlog
+	rootLogger = logging.getLogger ()
+	structHandler = StructLogHandler (level=level, logger=logger)
+	rootLogger.addHandler (structHandler)
+	rootLogger.setLevel (level)
 

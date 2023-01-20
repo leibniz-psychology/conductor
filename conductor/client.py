@@ -1,4 +1,4 @@
-# Copyright 2019–2020 Leibniz Institute for Psychology
+# Copyright 2019–2022 Leibniz Institute for Psychology
 # 
 # Permission is hereby granted, free of charge, to any person obtaining a copy
 # of this software and associated documentation files (the "Software"), to deal
@@ -18,16 +18,15 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import asyncio, logging, argparse, sys, json, os, signal, secrets, subprocess, traceback
+import asyncio, argparse, sys, json, os, signal, secrets, subprocess, traceback
 from enum import unique, IntEnum
 from hashlib import blake2b
 
 import asyncssh
 from furl import furl
+import structlog
 
-from .util import proxy, socketListener
-
-logger = logging.getLogger (__name__)
+from .util import proxy, socketListener, configureStructlog
 
 def randomSecret (n):
 	alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -61,6 +60,7 @@ class Client ():
 		self.replace = replace
 		self.key = key
 		self.nextConnId = 0
+		self.logger = structlog.get_logger ()
 
 	def connectLocal (self):
 		return asyncio.open_unix_connection (path=self.localSocket)
@@ -68,33 +68,34 @@ class Client ():
 	async def handler (self, reader, writer):
 		connid = self.nextConnId
 		self.nextConnId += 1
-		logger.debug (f'{connid}: new connection')
+		logger = self.logger.bind (connid=connid)
+		logger.debug ('client_connect')
 
 		try:
 			sockreader, sockwriter = await self.connectLocal ()
 		except Exception as e:
-			logger.error (f'{connid}: local socket {self.localSocket} not avaiable, {e}')
+			logger.error ('client_socket_unavailable', error=e)
 			writer.close ()
 			return
 
-		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'ssh'), logger=logger, logPrefix=connid)
+		await proxy ((sockreader, sockwriter, 'sock'), (reader, writer, 'ssh'), logger=logger)
 
 	def accept (self):
 		return self.handler
 
 	@staticmethod
-	def checkSocketExists (path, replace=False):
+	def checkSocketExists (path, logger, replace=False):
 		if os.path.exists (path):
 			try:
 				for pid in socketListener (path):
 					if replace:
-						logger.error (f'Killing PID {pid}')
+						logger.info ('replace_pid', pid=pid)
 						os.kill (pid, signal.SIGTERM)
 					else:
-						logger.error (f'PID {pid} is already listening on {path}')
+						logger.error ('existing_pid', pid=pid)
 						raise FileExistsError ()
 			except KeyError:
-				logger.debug (f'removing stale socket {path}')
+				logger.debug ('stale_socket_unlink', path=path)
 				os.unlink (path)
 
 	def connect (self):
@@ -110,10 +111,12 @@ class Client ():
 	async def runControl (self, programReady):
 		""" Connection to conductor-server """
 
+		logger = self.logger
+
 		async def openReaderWriter ():
 			while True:
 				try:
-					logger.debug (f'trying to open {controlUrl.path}')
+					logger.debug ('control_connect')
 					return await conn.open_unix_connection (str (controlUrl.path),
 							encoding='utf-8')
 				except asyncssh.misc.ChannelOpenError:
@@ -133,7 +136,7 @@ class Client ():
 					controlReader, controlWriter = await asyncio.wait_for (
 							openReaderWriter (), timeout=connectTotalTimeout)
 				except asyncio.TimeoutError:
-					logger.error (f'Cannot connect to {controlUrl.path}')
+					logger.error ('control_connect_timeout', timeout=connectTotalTimeout)
 					# fatal error
 					return False
 				# if the initial connection succeeded we can wait longer for it.
@@ -148,7 +151,7 @@ class Client ():
 					listener = await conn.start_unix_server (self.accept,
 							listen_path=remoteSocketPath)
 				except asyncssh.misc.ChannelListenError as e:
-					logger.error (f'Cannot listen on socket {remoteSocketPath}: {e}')
+					logger.error ('control_listen_error', error=e)
 					# this is a hard error
 					return False
 
@@ -197,7 +200,9 @@ class Client ():
 	async def runProgram (self, programReady):
 		""" Run the client program """
 
-		logger.debug (f'starting program {self.command}')
+		logger = self.logger.bind (localSocket=self.localSocket, command=self.command)
+
+		logger.debug ('program_start')
 		commandproc = await asyncio.create_subprocess_exec (self.command[0],
 				*self.command[1:], start_new_session=True,
 				stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -210,10 +215,10 @@ class Client ():
 			while True:
 				try:
 					await self.connectLocal ()
-					logger.debug (f'local socket {self.localSocket} is available, moving on')
+					logger.debug ('program_ready')
 					break
 				except Exception as e:
-					logger.debug (f'local socket {self.localSocket} not avaiable yet ({e}), waiting')
+					logger.debug ('program_waiting', error=e)
 					if commandproc.returncode is not None:
 						writeJson (dict (state='failed', reason='subprocess terminated'))
 						return ExitCode.ERROR
@@ -223,13 +228,13 @@ class Client ():
 
 			return await commandproc.wait ()
 		except asyncio.CancelledError:
-			logger.debug ('cancelled runProgram')
+			logger.debug ('program_cancelled')
 		except Exception:
 			raise
 		finally:
 			ret = commandproc.returncode
 			if ret is None:
-				logger.debug ('terminating command')
+				logger.debug ('program_terminate')
 				# We’re starting commandproc above with
 				# start_new_session=True, which means it will be leader of
 				# a new process group with its PID. Kill the whole process
@@ -251,28 +256,30 @@ class Client ():
 					pass
 
 	async def run (self):
+		logger = self.logger
+
 		try:
-			self.checkSocketExists (self.localSocket, self.replace)
+			self.checkSocketExists (self.localSocket, logger, self.replace)
 		except FileExistsError:
 			return ExitCode.SOCKET_USED
 
-		logger.debug ('Starting tasks')
+		logger.debug ('starting')
 		programReady = asyncio.Event ()
 		runProgramTask = asyncio.ensure_future (self.runProgram (programReady))
 		runControlTask = asyncio.ensure_future (self.runControl (programReady))
 
 		try:
-			logger.debug ('Waiting for tasks')
+			logger.debug ('waiting')
 			# We’re done if either of the tasks exits.
 			done, pending = await asyncio.wait (
 					[runProgramTask, runControlTask],
 					return_when=asyncio.FIRST_COMPLETED)
-			logger.debug (f'{done} is done, {pending} is pending')
+			logger.debug ('future_terminated', done=done, pending=pending)
 		except asyncio.CancelledError:
-			logger.debug (f'cancelled')
+			logger.debug ('cancelled')
 			return ExitCode.OK
 		except Exception as e:
-			logger.error (f'failed with {e}')
+			logger.error ('error', error=e)
 			return ExitCode.ERROR
 		else:
 			if runControlTask.done ():
@@ -291,7 +298,7 @@ class Client ():
 				# not reached
 				assert False
 		finally:
-			logger.debug ('Cancelling remaining tasks')
+			logger.debug ('cancel_tasks')
 			runProgramTask.cancel ()
 			runControlTask.cancel ()
 			await runProgramTask
@@ -308,10 +315,8 @@ def main (): # pragma: nocover
 	parser.add_argument ('command', nargs=argparse.REMAINDER, help='Command to run')
 
 	args = parser.parse_args()
-	if args.verbose:
-		logging.basicConfig (level=logging.DEBUG)
-	else:
-		logging.basicConfig (level=logging.WARN)
+
+	configureStructlog (args.verbose)
 
 	token = os.getenv ('CONDUCTOR_TOKEN', None)
 	if token is not None:
