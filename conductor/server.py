@@ -417,7 +417,7 @@ def main (): # pragma: nocover
 
 	loop = asyncio.get_event_loop ()
 	proxy = Conductor (args.domain)
-	loop.create_task (proxy.run (port, sock, sslctx))
+	proxyTask = loop.create_task (proxy.run (port, sock, sslctx))
 	client = ClientInterface (os.path.abspath (args.runtimeDir), proxy)
 	loop.run_until_complete (client.run ())
 
