@@ -72,7 +72,6 @@ async def proxy (endpointa, endpointb, logger, beforeABClose=None):
 		logger.debug ('proxy_connetion_reset')
 	except Exception as e:
 		logger.debug ('proxy_exception', error=e)
-		traceback.print_exc()
 	finally:
 		logger.debug ('proxy_finally')
 		# make sure they are really closed
