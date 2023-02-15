@@ -71,7 +71,7 @@ async def proxy (endpointa, endpointb, logger, beforeABClose=None):
 	except ConnectionResetError:
 		logger.debug ('proxy_connetion_reset')
 	except Exception as e:
-		logger.debug ('proxy_exception', error=e)
+		logger.error ('proxy_exception', error=e)
 	finally:
 		logger.debug ('proxy_finally')
 		# make sure they are really closed
